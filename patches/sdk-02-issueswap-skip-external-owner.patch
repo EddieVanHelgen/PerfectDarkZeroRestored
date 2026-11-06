@@ -1,0 +1,39 @@
+From a0bf5c624165c52ee614f07bd6fc452436c14b24 Mon Sep 17 00:00:00 2001
+From: EddieVanHelgen <351187229+EddieVanHelgen@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 04:43:57 +0000
+Subject: [PATCH] IssueSwap: skip the plugin's presenter refresh while the
+ guest output is owned externally
+
+With a native renderer in the title owning the window output (Presenter::
+SetGuestOutputExternalOwner), the D3D12 plugin's swap no longer runs its post
+effects and refresh at all instead of having the refresh rejected late.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/graphics/d3d12/command_processor.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index ff50c06..588fef1 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -2093,6 +2093,16 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
+ 
++  if (ui::Presenter::IsGuestOutputExternal()) {
++    // A native renderer in the title owns the window output for this frame (PDZ stage 1): skip the
++    // plugin's swap post-processing and refresh entirely instead of racing it on the presenter.
++    static bool logged_skip = false;
++    if (!logged_skip) {
++      logged_skip = true;
++      REXGPU_INFO("IssueSwap: guest output owned externally; the plugin's presenter refresh is skipped");
++    }
++    return;
++  }
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+       [this, &swap_texture_srv_desc, frontbuffer_format, swap_texture_resource, guest_output_width,
+-- 
+2.55.0.windows.5
+

@@ -8,4 +8,4 @@ game_root = "assets"
 [entrypoint]
 file_path = "assets/default.xex"
 out_directory_path = "generated/default"
-includes = ["default_functions.toml"]
+includes = ["default_functions.toml", "midasm_hooks_tu3.toml", "codegen_options.toml"]  # tu3-base: midasm_hooks.toml holds launch addresses

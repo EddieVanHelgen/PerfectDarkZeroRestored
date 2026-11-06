@@ -1,0 +1,89 @@
+# Mid-function hooks for the recompiler (included from
+# perfectdarkzerorecomp_manifest.toml). Each entry calls a C++ function from
+# src/mod just before the instruction at `address`; with jump_address_on_true
+# the recompiled code jumps to that address (inside the same function) when
+# the function returns true. Changing this file re-runs codegen on the next
+# build; only the files holding the hooked functions are rewritten.
+#
+# Rare's Title Update 3 fixes (src/mod/tu_fixes.cpp, pdz_fix_tu_*). The jump
+# targets are the launch addresses of TU3's new branch targets.
+
+# U7: Datacore script null check on +2592 (TU3 822FFDC8).
+[[midasm_hook]]
+address = 0x822F89A0
+name = "PdzTuDatacoreNull"
+registers = ["r31"]
+jump_address_on_true = 0x822F8CDC
+
+[[midasm_hook]]
+address = 0x822F8D64
+name = "PdzTuDatacoreNull"
+registers = ["r31"]
+jump_address_on_true = 0x822F8F98
+
+# U8: bot task null checks on +76 (TU3 821C1A88 / 821C1D78 / 821C67A0 / 821C5160).
+[[midasm_hook]]
+address = 0x821BC518
+name = "PdzTuBotTaskNull"
+registers = ["r31"]
+jump_address_on_true = 0x821BC7A4
+
+[[midasm_hook]]
+address = 0x821BC7F8
+name = "PdzTuBotTaskNull"
+registers = ["r31"]
+jump_address_on_true = 0x821BC888
+
+[[midasm_hook]]
+address = 0x821C08E8
+name = "PdzTuBotTaskNull"
+registers = ["r31"]
+jump_address_on_true = 0x821C0980
+
+[[midasm_hook]]
+address = 0x821BF590
+name = "PdzTuBotTaskNull"
+registers = ["r31"]
+jump_address_on_true = 0x821BF660
+
+# U9: skip empty slots in the 4-entry base table (TU3 8217B2A0).
+[[midasm_hook]]
+address = 0x821766FC
+name = "PdzTuBaseSlotNull"
+registers = ["r8"]
+jump_address_on_true = 0x82176708
+
+# U11: LV10 script, list entry 14 also gets 15000 health (TU3 8230E5B4). True
+# re-runs the entry-13 call (bl sub_825C5A78 at 823067B8) for entry 14.
+[[midasm_hook]]
+address = 0x823067BC
+name = "PdzTuLv10Health"
+registers = ["r17", "r3", "f1"]
+jump_address_on_true = 0x823067B8
+
+# U21: no out-of-bounds HUD markers on Facility (33) / Ruin (35) (TU3 82435BB4).
+[[midasm_hook]]
+address = 0x82429DF0
+name = "PdzTuPackMarkerSkip"
+jump_address_on_true = 0x82429EE0
+
+# U12 / U18 (src/mod/dlc_maps.cpp): while the title update package registers
+# (sub_821F0410), a record it shouldn't take counts as already registered (r3
+# = the name's existing record, tested at 821F04D4).
+[[midasm_hook]]
+address = 0x821F04D4
+name = "PdzTuPackageEntry"
+registers = ["r3", "r31"]
+
+# U12: Township replacement textures after the background setup (TU3 82276D78
+# from 82278C28 / 82277A30): level load (sub_822711A0, r29 = leveldata) and
+# restart (sub_82270030, r27 = leveldata).
+[[midasm_hook]]
+address = 0x8227142C
+name = "PdzTuTownshipTextures"
+registers = ["r29"]
+
+[[midasm_hook]]
+address = 0x82270308
+name = "PdzTuTownshipTextures"
+registers = ["r27"]

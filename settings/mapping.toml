@@ -28,56 +28,77 @@ guide_button = true
 # Keyboard+mouse run in parallel with a physical gamepad, not instead of it -
 # the SDK always merges every assigned device's input for guest user 0
 # (see rex::input::MergeInto). mnk_mode turns on keyboard-as-controller;
-# mnk_mouse additionally routes mouse movement to the right stick.
+# mnk_mouse lets the mouse aim (below) and, where the game's on-foot look
+# doesn't run (vehicles, turrets), drive the right stick (mnk_sensitivity).
 mnk_mode = true
 mnk_mouse = true
 mnk_sensitivity = 5.0
 right_stick_deadzone_percentage = 0.2
 
+# Mouse aim (src/mod/mouse_look.cpp, docs/MOUSE_KEYBOARD.md): on foot the mouse
+# turns the view directly - no stick dead zone, response curve, acceleration
+# or turn cap; the game's pitch limit applies, and zoomed aiming is slower in
+# proportion to the field of view.
+pdz_mouse_look = true
+# The view turns 0.022 deg x this per mouse count (the Source games' scale).
+pdz_mouse_sensitivity = 2.0
+# Up / down inverted.
+pdz_mouse_invert = false
+# While the keyboard / mouse is the last device used, the game's auto-aim and
+# aim assist are off; using a controller brings them back (logged each switch).
+pdz_mouse_aim_assist_off = true
+# Step zoom (off by default; docs/MOUSE_KEYBOARD.md): holding LT / the aim key
+# zooms to the gun's first level, R3 / the mouse wheel steps to the others.
+# The settings window's Controls tab adds "pdz_zoom_steps = true" when ticked.
+
 # ─────────────────────────────────────────────────────────────
-# Keyboard bindings (default values)
+# Keyboard and mouse bindings (each to the controller input PDZ uses for it)
 # ─────────────────────────────────────────────────────────────
-# Format: comma-separated list of keys, optional modifiers (Shift+, Ctrl+, Alt+)
+# The settings window's Controls tab changes these lines (two keys per action;
+# this file's comments stay). By hand: a comma-separated list of keys. A key
+# with modifiers (Shift+X, Ctrl+X, Alt+X) needs them held; a key without works
+# whatever is held. Shift / Control / Alt are either side; LShift, RShift,
+# LControl, RControl, LAlt, RAlt, NumpadEnter one side. Any other key without
+# a name here: Scancode<N> (SDL's number). Mouse: LMB, RMB, MMB, Mouse4 (back),
+# Mouse5 (forward), Mouse6-Mouse32 (further buttons, if the mouse's driver
+# reports them through Raw Input), WheelUp, WheelDown, WheelLeft, WheelRight.
+#
+# Menus (whenever the game isn't in on-foot play): arrows / WASD move, Enter or
+# left click = A (select), Esc or right click = B (back), P = Start (multiplayer
+# setup needs it), the wheel = up / down. Button prompts stay Xbox.
 
-# Controller buttons
-keybind_a = "Semicolon,Space"          # A button
-keybind_b = "Quote,Backspace"          # B button
-keybind_x = "L"                        # X button
-keybind_y = "P"                        # Y button
+keybind_right_trigger = "LMB"          # RT: fire
+keybind_left_trigger = "RMB"           # LT: aim / zoom
+keybind_x = "R"                        # X: reload
+keybind_a = "Space,E"                  # A: use, doors, take cover (PDZ has no jump)
+keybind_lstick_press = "Control,C"     # L3: crouch / stand
+keybind_y = "Q,WheelUp,WheelDown"      # Y: select a weapon
+keybind_right_shoulder = "F,MMB"       # RB: secondary fire mode
+keybind_b = "V,Mouse4"                 # B: melee attack
+keybind_left_shoulder = "Shift,Mouse5" # LB: dodge (with a movement key for the direction)
+keybind_rstick_press = "Z"             # R3
+keybind_start = "Escape,P"             # Start: pause; P is Start in menus too (Esc is B there)
+keybind_back = "Tab"                   # Back: objectives / scores
 
-# Triggers (analog)
-keybind_left_trigger = "Q,I"           # Left trigger
-keybind_right_trigger = "E,O"          # Right trigger
+# Left stick: move
+keybind_lstick_up = "W"
+keybind_lstick_down = "S"
+keybind_lstick_left = "A"
+keybind_lstick_right = "D"
 
-# Shoulder buttons
-keybind_left_shoulder = "1"            # Left shoulder (LB)
-keybind_right_shoulder = "3"           # Right shoulder (RB)
+# D-pad: gadgets and items (left = the datathief in the training); menus too
+keybind_dpad_up = "1,Up"
+keybind_dpad_right = "2,Right"
+keybind_dpad_down = "3,Down"
+keybind_dpad_left = "4,Left"
 
-# Left stick (analog)
-keybind_lstick_up = "W"                # Left stick up
-keybind_lstick_down = "S"              # Left stick down
-keybind_lstick_left = "A"              # Left stick left
-keybind_lstick_right = "D"             # Left stick right
-keybind_lstick_press = "F"             # Left stick press (L3)
+# Right stick without a mouse (keyboard-only look)
+keybind_rstick_up = "Numpad8"
+keybind_rstick_down = "Numpad2"
+keybind_rstick_left = "Numpad4"
+keybind_rstick_right = "Numpad6"
 
-# Right stick (analog)
-keybind_rstick_up = "Up"               # Right stick up
-keybind_rstick_down = "Down"           # Right stick down
-keybind_rstick_left = "Left"           # Right stick left
-keybind_rstick_right = "Right"         # Right stick right
-keybind_rstick_press = "K"             # Right stick press (R3)
-
-# D-pad
-keybind_dpad_up = "Shift+Up"           # D-pad up
-keybind_dpad_down = "Shift+Down"       # D-pad down
-keybind_dpad_left = "Shift+Left"       # D-pad left
-keybind_dpad_right = "Shift+Right"     # D-pad right
-
-# Special buttons
-keybind_back = "Z,Tab"                 # Back button
-keybind_start = "X,Return"             # Start button
 keybind_guide = ""                     # Guide button (empty = disabled)
 
-
 # Mod hotkeys
-bind_third_person = "V"                # Toggle third-person camera (pdz_tp_*)
+bind_third_person = "F8"               # Toggle third-person camera (pdz_tp_*; not in the TU3 build)

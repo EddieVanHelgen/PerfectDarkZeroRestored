@@ -1,14 +1,12 @@
-// Game-specific patches.
+// Game-specific patches (tu3-base: the 60 fps unlock only).
 #pragma once
 
 namespace game_patches
 {
     enum class PatchId
     {
-        Fps60Unlock,
-        AspectRatio16_9
+        Fps60Unlock
     };
 
     bool IsEnabled(PatchId patch);
-    void ApplyEnabledPatches();
 } // namespace game_patches

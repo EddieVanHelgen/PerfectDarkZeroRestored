@@ -1,0 +1,9 @@
+# Copy of PDZRenderResearch/native/tools/datacore_cutscene.script (the opening cutscene plays out).
+# Boot -> Datacore like datacore.script, but the opening cutscene plays out (stage 2 M5 pacing check, m5_pace.md):
+# A every 2 s from 8 s to 30 s (MGS logo, Rare intro, press start, campaign select, level select, mission setup /
+# START MISSION; the level load starts at about t = 31-34 s in logs 422-428), then no press while the cutscene plays,
+# then A every 2 s again from 110 s (anything left waiting). The pdz_clock lines show whether a cutscene played
+# ("pdz_clock: cutscene ... (ended)", 2 s or more); if none did, move the 30 s stop by 2-4 s (earlier if the cutscene
+# was skipped, later if the game stayed in the menus) and run again.
+repeat 8 27 2.0 A 0.15   # [from, to): the last press at 26 s (log 173: the cutscene starts at about 28.7 s; a press at 30 s skipped it)
+repeat 110 400 2.0 A 0.15

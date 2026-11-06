@@ -1,0 +1,207 @@
+# pdz_latency_log test, multiplayer (tools/latency): boots to DEATHMATCH -> CREATE GAME and starts the match
+# (scenario, map and bots from --pdz_test_mp_setup, as the bot sweep), then from 110 s alternately the right stick
+# pushed right for 0.3 s and the trigger pulled for 0.12 s, 1.5 s apart (god mode keeps the human alive).
+press 8.0 A
+press 10.0 A
+press 12.0 A
+press 14.0 A        # PRESS START title -> GAME MODE
+press 17.0 DOWN     # -> COMBAT ARENA
+press 19.0 A        # -> connection (LOCAL)
+press 22.0 A        # LOCAL -> mode select (DEATHMATCH / DARK OPS)
+press 25.0 A        # DEATHMATCH -> CREATE GAME
+press 29.0 START    # CREATE -> GAME LOBBY
+press 33.0 START    # lobby: start the match
+stick 110.0 0.3 0 0 32767 0
+pad 111.5 RT 0.12
+stick 113.0 0.3 0 0 32767 0
+pad 114.5 RT 0.12
+stick 116.0 0.3 0 0 32767 0
+pad 117.5 RT 0.12
+stick 119.0 0.3 0 0 32767 0
+pad 120.5 RT 0.12
+stick 122.0 0.3 0 0 32767 0
+pad 123.5 RT 0.12
+stick 125.0 0.3 0 0 32767 0
+pad 126.5 RT 0.12
+stick 128.0 0.3 0 0 32767 0
+pad 129.5 RT 0.12
+stick 131.0 0.3 0 0 32767 0
+pad 132.5 RT 0.12
+stick 134.0 0.3 0 0 32767 0
+pad 135.5 RT 0.12
+stick 137.0 0.3 0 0 32767 0
+pad 138.5 RT 0.12
+stick 140.0 0.3 0 0 32767 0
+pad 141.5 RT 0.12
+stick 143.0 0.3 0 0 32767 0
+pad 144.5 RT 0.12
+stick 146.0 0.3 0 0 32767 0
+pad 147.5 RT 0.12
+stick 149.0 0.3 0 0 32767 0
+pad 150.5 RT 0.12
+stick 152.0 0.3 0 0 32767 0
+pad 153.5 RT 0.12
+stick 155.0 0.3 0 0 32767 0
+pad 156.5 RT 0.12
+stick 158.0 0.3 0 0 32767 0
+pad 159.5 RT 0.12
+stick 161.0 0.3 0 0 32767 0
+pad 162.5 RT 0.12
+stick 164.0 0.3 0 0 32767 0
+pad 165.5 RT 0.12
+stick 167.0 0.3 0 0 32767 0
+pad 168.5 RT 0.12
+stick 170.0 0.3 0 0 32767 0
+pad 171.5 RT 0.12
+stick 173.0 0.3 0 0 32767 0
+pad 174.5 RT 0.12
+stick 176.0 0.3 0 0 32767 0
+pad 177.5 RT 0.12
+stick 179.0 0.3 0 0 32767 0
+pad 180.5 RT 0.12
+stick 182.0 0.3 0 0 32767 0
+pad 183.5 RT 0.12
+stick 185.0 0.3 0 0 32767 0
+pad 186.5 RT 0.12
+stick 188.0 0.3 0 0 32767 0
+pad 189.5 RT 0.12
+stick 191.0 0.3 0 0 32767 0
+pad 192.5 RT 0.12
+stick 194.0 0.3 0 0 32767 0
+pad 195.5 RT 0.12
+stick 197.0 0.3 0 0 32767 0
+pad 198.5 RT 0.12
+stick 200.0 0.3 0 0 32767 0
+pad 201.5 RT 0.12
+stick 203.0 0.3 0 0 32767 0
+pad 204.5 RT 0.12
+stick 206.0 0.3 0 0 32767 0
+pad 207.5 RT 0.12
+stick 209.0 0.3 0 0 32767 0
+pad 210.5 RT 0.12
+stick 212.0 0.3 0 0 32767 0
+pad 213.5 RT 0.12
+stick 215.0 0.3 0 0 32767 0
+pad 216.5 RT 0.12
+stick 218.0 0.3 0 0 32767 0
+pad 219.5 RT 0.12
+stick 221.0 0.3 0 0 32767 0
+pad 222.5 RT 0.12
+stick 224.0 0.3 0 0 32767 0
+pad 225.5 RT 0.12
+stick 227.0 0.3 0 0 32767 0
+pad 228.5 RT 0.12
+stick 230.0 0.3 0 0 32767 0
+pad 231.5 RT 0.12
+stick 233.0 0.3 0 0 32767 0
+pad 234.5 RT 0.12
+stick 236.0 0.3 0 0 32767 0
+pad 237.5 RT 0.12
+stick 239.0 0.3 0 0 32767 0
+pad 240.5 RT 0.12
+stick 242.0 0.3 0 0 32767 0
+pad 243.5 RT 0.12
+stick 245.0 0.3 0 0 32767 0
+pad 246.5 RT 0.12
+stick 248.0 0.3 0 0 32767 0
+pad 249.5 RT 0.12
+stick 251.0 0.3 0 0 32767 0
+pad 252.5 RT 0.12
+stick 254.0 0.3 0 0 32767 0
+pad 255.5 RT 0.12
+stick 257.0 0.3 0 0 32767 0
+pad 258.5 RT 0.12
+stick 260.0 0.3 0 0 32767 0
+pad 261.5 RT 0.12
+stick 263.0 0.3 0 0 32767 0
+pad 264.5 RT 0.12
+stick 266.0 0.3 0 0 32767 0
+pad 267.5 RT 0.12
+stick 269.0 0.3 0 0 32767 0
+pad 270.5 RT 0.12
+stick 272.0 0.3 0 0 32767 0
+pad 273.5 RT 0.12
+stick 275.0 0.3 0 0 32767 0
+pad 276.5 RT 0.12
+stick 278.0 0.3 0 0 32767 0
+pad 279.5 RT 0.12
+stick 281.0 0.3 0 0 32767 0
+pad 282.5 RT 0.12
+stick 284.0 0.3 0 0 32767 0
+pad 285.5 RT 0.12
+stick 287.0 0.3 0 0 32767 0
+pad 288.5 RT 0.12
+stick 290.0 0.3 0 0 32767 0
+pad 291.5 RT 0.12
+stick 293.0 0.3 0 0 32767 0
+pad 294.5 RT 0.12
+stick 296.0 0.3 0 0 32767 0
+pad 297.5 RT 0.12
+stick 299.0 0.3 0 0 32767 0
+pad 300.5 RT 0.12
+stick 302.0 0.3 0 0 32767 0
+pad 303.5 RT 0.12
+stick 305.0 0.3 0 0 32767 0
+pad 306.5 RT 0.12
+stick 308.0 0.3 0 0 32767 0
+pad 309.5 RT 0.12
+stick 311.0 0.3 0 0 32767 0
+pad 312.5 RT 0.12
+stick 314.0 0.3 0 0 32767 0
+pad 315.5 RT 0.12
+stick 317.0 0.3 0 0 32767 0
+pad 318.5 RT 0.12
+stick 320.0 0.3 0 0 32767 0
+pad 321.5 RT 0.12
+stick 323.0 0.3 0 0 32767 0
+pad 324.5 RT 0.12
+stick 326.0 0.3 0 0 32767 0
+pad 327.5 RT 0.12
+stick 329.0 0.3 0 0 32767 0
+pad 330.5 RT 0.12
+stick 332.0 0.3 0 0 32767 0
+pad 333.5 RT 0.12
+stick 335.0 0.3 0 0 32767 0
+pad 336.5 RT 0.12
+stick 338.0 0.3 0 0 32767 0
+pad 339.5 RT 0.12
+stick 341.0 0.3 0 0 32767 0
+pad 342.5 RT 0.12
+stick 344.0 0.3 0 0 32767 0
+pad 345.5 RT 0.12
+stick 347.0 0.3 0 0 32767 0
+pad 348.5 RT 0.12
+stick 350.0 0.3 0 0 32767 0
+pad 351.5 RT 0.12
+stick 353.0 0.3 0 0 32767 0
+pad 354.5 RT 0.12
+stick 356.0 0.3 0 0 32767 0
+pad 357.5 RT 0.12
+stick 359.0 0.3 0 0 32767 0
+pad 360.5 RT 0.12
+stick 362.0 0.3 0 0 32767 0
+pad 363.5 RT 0.12
+stick 365.0 0.3 0 0 32767 0
+pad 366.5 RT 0.12
+stick 368.0 0.3 0 0 32767 0
+pad 369.5 RT 0.12
+stick 371.0 0.3 0 0 32767 0
+pad 372.5 RT 0.12
+stick 374.0 0.3 0 0 32767 0
+pad 375.5 RT 0.12
+stick 377.0 0.3 0 0 32767 0
+pad 378.5 RT 0.12
+stick 380.0 0.3 0 0 32767 0
+pad 381.5 RT 0.12
+stick 383.0 0.3 0 0 32767 0
+pad 384.5 RT 0.12
+stick 386.0 0.3 0 0 32767 0
+pad 387.5 RT 0.12
+stick 389.0 0.3 0 0 32767 0
+pad 390.5 RT 0.12
+stick 392.0 0.3 0 0 32767 0
+pad 393.5 RT 0.12
+stick 395.0 0.3 0 0 32767 0
+pad 396.5 RT 0.12
+stick 398.0 0.3 0 0 32767 0
+pad 399.5 RT 0.12

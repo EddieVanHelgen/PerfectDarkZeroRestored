@@ -16,6 +16,12 @@ namespace local_profiles
   // logging is up; Init logs what it found.
   std::filesystem::path Load(const std::filesystem::path &user_data_root);
 
+  // The user data root Load was given (shared by every profile).
+  std::filesystem::path BaseDataRoot();
+
+  // The folder that holds the running profile's saves (what Load returned).
+  std::filesystem::path RunningDataRoot();
+
   // Registers the dialog hotkey (bind_local_profiles, default F9).
   void Init(rex::ui::ImGuiDrawer *drawer);
 

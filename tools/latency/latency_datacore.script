@@ -1,0 +1,128 @@
+# pdz_latency_log test, Datacore (tools/latency): boot -> Datacore with A (as PDZRenderResearch datacore.script),
+# then from 105 s alternately the right stick pushed right for 0.3 s and the trigger pulled for 0.12 s, 1.5 s apart,
+# so each change is timed to the first frame whose view turns / gun fires (pdz_latency: / frame_pacing: reaction).
+repeat 8 100 2.0 A 0.15
+stick 105.0 0.3 0 0 32767 0
+pad 106.5 RT 0.12
+stick 108.0 0.3 0 0 32767 0
+pad 109.5 RT 0.12
+stick 111.0 0.3 0 0 32767 0
+pad 112.5 RT 0.12
+stick 114.0 0.3 0 0 32767 0
+pad 115.5 RT 0.12
+stick 117.0 0.3 0 0 32767 0
+pad 118.5 RT 0.12
+stick 120.0 0.3 0 0 32767 0
+pad 121.5 RT 0.12
+stick 123.0 0.3 0 0 32767 0
+pad 124.5 RT 0.12
+stick 126.0 0.3 0 0 32767 0
+pad 127.5 RT 0.12
+stick 129.0 0.3 0 0 32767 0
+pad 130.5 RT 0.12
+stick 132.0 0.3 0 0 32767 0
+pad 133.5 RT 0.12
+stick 135.0 0.3 0 0 32767 0
+pad 136.5 RT 0.12
+stick 138.0 0.3 0 0 32767 0
+pad 139.5 RT 0.12
+stick 141.0 0.3 0 0 32767 0
+pad 142.5 RT 0.12
+stick 144.0 0.3 0 0 32767 0
+pad 145.5 RT 0.12
+stick 147.0 0.3 0 0 32767 0
+pad 148.5 RT 0.12
+stick 150.0 0.3 0 0 32767 0
+pad 151.5 RT 0.12
+stick 153.0 0.3 0 0 32767 0
+pad 154.5 RT 0.12
+stick 156.0 0.3 0 0 32767 0
+pad 157.5 RT 0.12
+stick 159.0 0.3 0 0 32767 0
+pad 160.5 RT 0.12
+stick 162.0 0.3 0 0 32767 0
+pad 163.5 RT 0.12
+stick 165.0 0.3 0 0 32767 0
+pad 166.5 RT 0.12
+stick 168.0 0.3 0 0 32767 0
+pad 169.5 RT 0.12
+stick 171.0 0.3 0 0 32767 0
+pad 172.5 RT 0.12
+stick 174.0 0.3 0 0 32767 0
+pad 175.5 RT 0.12
+stick 177.0 0.3 0 0 32767 0
+pad 178.5 RT 0.12
+stick 180.0 0.3 0 0 32767 0
+pad 181.5 RT 0.12
+stick 183.0 0.3 0 0 32767 0
+pad 184.5 RT 0.12
+stick 186.0 0.3 0 0 32767 0
+pad 187.5 RT 0.12
+stick 189.0 0.3 0 0 32767 0
+pad 190.5 RT 0.12
+stick 192.0 0.3 0 0 32767 0
+pad 193.5 RT 0.12
+stick 195.0 0.3 0 0 32767 0
+pad 196.5 RT 0.12
+stick 198.0 0.3 0 0 32767 0
+pad 199.5 RT 0.12
+stick 201.0 0.3 0 0 32767 0
+pad 202.5 RT 0.12
+stick 204.0 0.3 0 0 32767 0
+pad 205.5 RT 0.12
+stick 207.0 0.3 0 0 32767 0
+pad 208.5 RT 0.12
+stick 210.0 0.3 0 0 32767 0
+pad 211.5 RT 0.12
+stick 213.0 0.3 0 0 32767 0
+pad 214.5 RT 0.12
+stick 216.0 0.3 0 0 32767 0
+pad 217.5 RT 0.12
+stick 219.0 0.3 0 0 32767 0
+pad 220.5 RT 0.12
+stick 222.0 0.3 0 0 32767 0
+pad 223.5 RT 0.12
+stick 225.0 0.3 0 0 32767 0
+pad 226.5 RT 0.12
+stick 228.0 0.3 0 0 32767 0
+pad 229.5 RT 0.12
+stick 231.0 0.3 0 0 32767 0
+pad 232.5 RT 0.12
+stick 234.0 0.3 0 0 32767 0
+pad 235.5 RT 0.12
+stick 237.0 0.3 0 0 32767 0
+pad 238.5 RT 0.12
+stick 240.0 0.3 0 0 32767 0
+pad 241.5 RT 0.12
+stick 243.0 0.3 0 0 32767 0
+pad 244.5 RT 0.12
+stick 246.0 0.3 0 0 32767 0
+pad 247.5 RT 0.12
+stick 249.0 0.3 0 0 32767 0
+pad 250.5 RT 0.12
+stick 252.0 0.3 0 0 32767 0
+pad 253.5 RT 0.12
+stick 255.0 0.3 0 0 32767 0
+pad 256.5 RT 0.12
+stick 258.0 0.3 0 0 32767 0
+pad 259.5 RT 0.12
+stick 261.0 0.3 0 0 32767 0
+pad 262.5 RT 0.12
+stick 264.0 0.3 0 0 32767 0
+pad 265.5 RT 0.12
+stick 267.0 0.3 0 0 32767 0
+pad 268.5 RT 0.12
+stick 270.0 0.3 0 0 32767 0
+pad 271.5 RT 0.12
+stick 273.0 0.3 0 0 32767 0
+pad 274.5 RT 0.12
+stick 276.0 0.3 0 0 32767 0
+pad 277.5 RT 0.12
+stick 279.0 0.3 0 0 32767 0
+pad 280.5 RT 0.12
+stick 282.0 0.3 0 0 32767 0
+pad 283.5 RT 0.12
+stick 285.0 0.3 0 0 32767 0
+pad 286.5 RT 0.12
+stick 288.0 0.3 0 0 32767 0
+pad 289.5 RT 0.12

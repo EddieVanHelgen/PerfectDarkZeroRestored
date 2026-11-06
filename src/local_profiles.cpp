@@ -371,6 +371,16 @@ namespace local_profiles
     return user_data_root / "profiles" / std::to_string(g_running_id);
   }
 
+  std::filesystem::path BaseDataRoot()
+  {
+    return g_file.parent_path();
+  }
+
+  std::filesystem::path RunningDataRoot()
+  {
+    return g_running_id == 0 ? BaseDataRoot() : BaseDataRoot() / "profiles" / std::to_string(g_running_id);
+  }
+
   void Init(rex::ui::ImGuiDrawer *drawer)
   {
     if (!g_load_error.empty())

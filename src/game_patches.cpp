@@ -1,22 +1,15 @@
-#include "generated/default/perfectdarkzerorecomp_init.h"
-
-#include <array>
-#include <atomic>
-#include <chrono>
+// Game patches for the Title Update 3 build (tu3-base). Only the 60 fps
+// unlock is ported; the launch branch's 16:9 patch, user_language fix and
+// mouse look hold are not (docs/TU3_BASE.md, re-targeting checklist).
 #include <cstdint>
-#include <cstring>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
-#include <rex/logging.h>
-#include <rex/memory/utils.h>
-#include <rex/runtime.h>
-#include <rex/system/flags.h>
-#include <rex/system/xmemory.h>
 
 #include "game_cvars.h"
 #include "game_constants.h"
 #include "game_patches.h"
+#include "mod/render/game_pace.h" // pdz_null_refresh_hz forces the 1-vblank interval
 
 namespace game_patches
 {
@@ -25,81 +18,18 @@ namespace game_patches
     switch (patch)
     {
     case PatchId::Fps60Unlock:
-      return REXCVAR_GET(pdz_fps60_unlock);
-    case PatchId::AspectRatio16_9:
-      return REXCVAR_GET(pdz_aspect_ratio_16_9);
+      // Stage 2 M5: at a paced guest refresh above 60 Hz (pdz_null_refresh_hz) the interval must be 1 vblank too.
+      return REXCVAR_GET(pdz_fps60_unlock) || pdz::pace::ForcesInterval1();
     }
     return false;
   }
 } // namespace game_patches
 
-namespace
-{
-  bool WriteGuestBytes(uint32_t address, const uint8_t *bytes, uint32_t size)
-  {
-    if (!bytes || !size)
-    {
-      REXLOG_WARN("Cannot apply game patch at guest address {:08X}: empty patch data", address);
-      return false;
-    }
+// 60 fps: the call that sets the presentation interval (T sub_826DF7F0's
+// call of sub_826DE408; launch sub_826CFAA0 -> sub_826CE6B8) gets interval 1.
+REX_EXTERN(__imp__sub_826DE408);
 
-    auto *rt = rex::Runtime::instance();
-    auto *memory = rt ? rt->memory() : nullptr;
-    auto *heap = memory ? memory->LookupHeap(address) : nullptr;
-    if (!heap)
-    {
-      REXLOG_WARN("Cannot apply game patch at guest address {:08X}: no guest heap", address);
-      return false;
-    }
-
-    const uint64_t last_address = static_cast<uint64_t>(address) + size - 1;
-    if (last_address > UINT32_MAX ||
-        address / heap->page_size() != last_address / heap->page_size())
-    {
-      REXLOG_WARN("Cannot apply game patch at guest address {:08X}: range crosses a guest page",
-                  address);
-      return false;
-    }
-
-    constexpr uint32_t writable = rex::memory::kMemoryProtectRead |
-                                  rex::memory::kMemoryProtectWrite;
-    uint32_t old_protect{};
-    if (!heap->Protect(address, size, writable, &old_protect))
-    {
-      REXLOG_WARN("Cannot make guest range {:08X}+{:X} writable for game patch", address, size);
-      return false;
-    }
-
-    std::memcpy(memory->TranslateVirtual(address), bytes, size);
-    if (!heap->Protect(address, size, old_protect, nullptr))
-    {
-      REXLOG_WARN("Cannot restore guest protection for game patch at {:08X}", address);
-      return false;
-    }
-    return true;
-  }
-
-  void ApplyAspectRatioPatch()
-  {
-    if (!game_patches::IsEnabled(game_patches::PatchId::AspectRatio16_9))
-    {
-      return;
-    }
-
-    const auto patch = GameConstants::PatchConstants::AspectRatio();
-    const std::array<uint8_t, 4> bytes{
-        static_cast<uint8_t>(patch.value >> 24),
-        static_cast<uint8_t>(patch.value >> 16),
-        static_cast<uint8_t>(patch.value >> 8),
-        static_cast<uint8_t>(patch.value)};
-    WriteGuestBytes(static_cast<uint32_t>(patch.address), bytes.data(),
-                    static_cast<uint32_t>(bytes.size()));
-  }
-} // namespace
-
-REX_EXTERN(__imp__sub_826CE6B8);
-
-REX_HOOK_RAW(sub_826CE6B8)
+REX_HOOK_RAW(sub_826DE408)
 {
   const auto patch = GameConstants::PatchConstants::Fps60();
   if (ctx.lr == patch.call_site &&
@@ -108,91 +38,5 @@ REX_HOOK_RAW(sub_826CE6B8)
     ctx.r7.u32 = (ctx.r7.u32 & patch.preserve_mask) | patch.set_bits;
   }
 
-  __imp__sub_826CE6B8(ctx, base);
+  __imp__sub_826DE408(ctx, base);
 }
-
-REX_EXTERN(__imp__sub_82394750);
-
-// The SDK's XGetLanguage ignores user_language; a missing loc folder falls back to English.
-REX_HOOK_RAW(sub_82394750)
-{
-  const auto patch = GameConstants::PatchConstants::Language();
-  if (ctx.lr == patch.call_site && base)
-  {
-    uint32_t language = REXCVAR_GET(user_language);
-    if (language < 1 || language > patch.max_language)
-    {
-      language = 1;
-    }
-    rex::memory::store_and_swap<uint32_t>(base + patch.address, language);
-  }
-
-  __imp__sub_82394750(ctx, base);
-}
-
-REX_EXTERN(__imp__sub_82AC4CB8);
-
-REX_HOOK_RAW(sub_82AC4CB8)
-{
-  const uint32_t state_address = ctx.r4.u32;
-  __imp__sub_82AC4CB8(ctx, base);
-
-  if (!base || !state_address || ctx.r3.u32 != 0)
-  {
-    return;
-  }
-
-  uint8_t *state = base + state_address;
-  const auto read_be_i16 = [](const uint8_t *bytes)
-  {
-    const uint16_t value = (uint16_t(bytes[0]) << 8) | bytes[1];
-    return static_cast<int16_t>(value);
-  };
-  const auto write_be_i16 = [](uint8_t *bytes, int16_t value)
-  {
-    const auto unsigned_value = static_cast<uint16_t>(value);
-    bytes[0] = static_cast<uint8_t>(unsigned_value >> 8);
-    bytes[1] = static_cast<uint8_t>(unsigned_value);
-  };
-
-  int16_t right_x = read_be_i16(state + 12);
-  int16_t right_y = read_be_i16(state + 14);
-
-  // The MNK driver drains its accumulated mouse delta on every poll
-  // Hold the last nonzero sample and let it decay over a short window instead.
-  static std::atomic<int64_t> last_nonzero_time_ms{0};
-  static std::atomic<int16_t> held_x{0};
-  static std::atomic<int16_t> held_y{0};
-  constexpr int64_t kHoldWindowMs = 80;
-
-  const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now().time_since_epoch())
-                             .count();
-
-  if (right_x != 0 || right_y != 0)
-  {
-    held_x.store(right_x, std::memory_order_relaxed);
-    held_y.store(right_y, std::memory_order_relaxed);
-    last_nonzero_time_ms.store(now_ms, std::memory_order_relaxed);
-  }
-  else
-  {
-    const int64_t elapsed = now_ms - last_nonzero_time_ms.load(std::memory_order_relaxed);
-    if (elapsed >= 0 && elapsed < kHoldWindowMs)
-    {
-      const double decay = 1.0 - static_cast<double>(elapsed) / static_cast<double>(kHoldWindowMs);
-      right_x = static_cast<int16_t>(held_x.load(std::memory_order_relaxed) * decay);
-      right_y = static_cast<int16_t>(held_y.load(std::memory_order_relaxed) * decay);
-      write_be_i16(state + 12, right_x);
-      write_be_i16(state + 14, right_y);
-    }
-  }
-}
-
-namespace game_patches
-{
-  void ApplyEnabledPatches()
-  {
-    ApplyAspectRatioPatch();
-  }
-} // namespace game_patches

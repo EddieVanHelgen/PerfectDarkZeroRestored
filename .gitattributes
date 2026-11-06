@@ -3,3 +3,6 @@
 *.h text eol=lf
 *.hpp text eol=lf
 *.cmake text eol=lf
+
+# The shader translator include goes byte for byte into every translated shader (thirdparty/XenosRecomp-pdz).
+thirdparty/XenosRecomp-pdz/shader_common_pdz.hlsli -text

@@ -1,0 +1,24 @@
+# Code generation speed-up options (docs/CODEGEN_SPEEDUP.md), included from
+# perfectdarkzerorecomp_manifest.toml. All false = today's generated code, byte for byte.
+# Changing this file re-runs codegen on the next tools\build_play.bat (a full rebuild of the
+# generated code). Only options proven identical (lockstep verify, picture gate, verify modes)
+# and measured not slower in every CPU mode are turned on here.
+
+# A bl / b to a register save / restore helper (__savegprlr_N, __restgprlr_N, __savefpr_N,
+# __restfpr_N, __savevmx_N, __restvmx_N) emits the helper's own statements in place of the call.
+inline_save_restore = false
+
+# r1-based D-form loads / stores skip the 0xE0000000-view offset check (guest stacks are in
+# 0x70000000-0x7F000000). _verify keeps the check and logs any r1 access in that view.
+stack_direct_access = false
+stack_direct_access_verify = false
+
+# Stage 2: the function's guest registers as C++ locals, written back to the context before every
+# call / trap / return and reloaded after every call (so callees, hooks and the kernel always see
+# the context exactly as before). local_registers_functions = [addresses] limits it to those;
+# local_registers_exclude = [addresses] keeps those as generated. _verify (proof builds only) keeps
+# each function's ctx-only code as the one that runs and checks the localized code against it in
+# lockstep (rex/ppc/lockstep.h: every memory access and register compared; only what it can check is localized; --local_registers_verify_every=N).
+local_registers = false
+local_registers_verify = false
+local_registers_exclude = [0x828A6490]  # LLVM 22 lld-link crash (Machine Instruction Scheduler) on its lockstep shadow

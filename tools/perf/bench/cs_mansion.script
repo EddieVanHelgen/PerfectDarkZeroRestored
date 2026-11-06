@@ -1,0 +1,15 @@
+# Night cutscene test: boot into Mansion (the zfight script's menu timing), stop pressing at 33 s so the opening
+# cutscene plays out, then A every 2 s from 125 s (anything left waiting).
+press 8.0 A
+press 10.0 A
+press 12.0 A
+press 14.0 A
+press 16.0 A
+press 18.0 A
+press 20.0 DOWN
+press 21.0 DOWN
+press 22.0 DOWN
+press 23.0 DOWN
+press 25.0 A
+repeat 27.0 34.0 2.0 A 0.15
+repeat 125.0 400.0 2.0 A 0.15

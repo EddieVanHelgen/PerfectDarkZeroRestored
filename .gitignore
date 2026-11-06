@@ -6,5 +6,23 @@ generated/*
 out/*
 rexglue/*
 !rexglue/README.md
-tools/
+tools/*
+!tools/xwb_export.py
+!tools/stfs.py
+!tools/stfs_verify.py
+music_export/
 *.log
+*.profraw
+# Music files are never committed or shipped (your own MP3s: pdz_mp_music_custom_dir, docs/MP_MUSIC_CUSTOM.md)
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.wma
+*.aac
+*.xwm
+MyMusic/
+
+# Recompiled launch-exe code made by tools/lift_music.py from your own launch build: never commit it
+src/music/music_lifted.inc

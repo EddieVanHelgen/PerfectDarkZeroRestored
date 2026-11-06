@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include <rex/hook.h>
+#include "guest_function.h" // our indirect calls: nullptr for no function (log 101)
 #include <rex/ui/keybinds.h>
 
 #include "../game_constants.h"
@@ -65,9 +66,10 @@ namespace
 
   // Zoom is detected from the FOV: enter as soon as it drops, leave only once
   // it is fully back; the gap keeps the camera from flapping at a threshold.
+  // The unzoomed FOV is 58 degrees times pdz_fov_scale.
   constexpr float kBaseFov = 58.0f;
-  constexpr float kZoomEnterFov = kBaseFov - 1.0f;
-  constexpr float kZoomExitFov = kBaseFov - 0.3f;
+  constexpr float kZoomEnterMargin = 1.0f;
+  constexpr float kZoomExitMargin = 0.3f;
   bool g_zoomed = false;
 
   // pdz_tp_zoom_mode values.
@@ -167,7 +169,7 @@ namespace
   // Returns r3; 0 if the method can't be resolved.
   uint32_t CallVirtual(PPCContext &ctx, uint8_t *base, uint32_t object, uint32_t slot)
   {
-    PPCFunc *fn = rex::runtime::ResolveIndirectFunction(LoadBe32(base, LoadBe32(base, object) + slot));
+    PPCFunc *fn = pdz::GuestFunction(LoadBe32(base, LoadBe32(base, object) + slot));
     if (!fn)
     {
       return 0;
@@ -240,7 +242,8 @@ REX_HOOK_RAW(sub_8220D9C8)
   const float fov = LoadBeFloat(base, mode + kFov);
   if (is_player && fov > 0.0f)
   {
-    g_zoomed = g_zoomed ? fov < kZoomExitFov : fov < kZoomEnterFov;
+    const float base_fov = kBaseFov * float(REXCVAR_GET(pdz_fov_scale));
+    g_zoomed = g_zoomed ? fov < base_fov - kZoomExitMargin : fov < base_fov - kZoomEnterMargin;
   }
   // A zoom that starts with the binoculars counts as a binocular zoom until it
   // ends.

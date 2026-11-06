@@ -5,3 +5,9 @@
 
 // Icon resource
 IDI_ICON1 ICON "bin_ico.ico"
+
+// The common controls' current look for the settings window only (activated around it: settings_window.cpp).
+3 24 "pdz_comctl6.manifest"
+
+// Rajdhani Bold (SIL Open Font License 1.1, licenses\rajdhani\OFL.txt): the settings and setup windows' display font.
+10 RCDATA "fonts/Rajdhani-Bold.ttf"

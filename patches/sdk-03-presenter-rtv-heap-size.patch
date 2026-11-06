@@ -1,0 +1,37 @@
+From ed244d8e9603508bd51e5333af230c97a59dd110 Mon Sep 17 00:00:00 2001
+From: EddieVanHelgen <351187229+EddieVanHelgen@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 04:50:17 +0000
+Subject: [PATCH] D3D12Presenter: size the RTV heap for every intermediate
+ texture
+
+guest_output_intermediate_textures holds kMaxGuestOutputPaintEffects - 1 (5)
+textures, and the view heap is sized for all of them, but kRTVCount reserved
+only kGuestOutputMailboxSize - 1 (2) intermediate RTVs. A paint flow with more
+than three effects (an FSR upscale of a small guest output to a large window)
+created RTVs past the end of the heap: D3D12 debug layer error 646 and an access
+violation in the user-mode driver.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/rex/ui/d3d12/d3d12_presenter.h | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/include/rex/ui/d3d12/d3d12_presenter.h b/include/rex/ui/d3d12/d3d12_presenter.h
+index ffa8b32..80971f6 100644
+--- a/include/rex/ui/d3d12/d3d12_presenter.h
++++ b/include/rex/ui/d3d12/d3d12_presenter.h
+@@ -180,7 +180,10 @@ class D3D12Presenter final : public Presenter {
+       // guest_output_intermediate_texture_paint_last_usage_.
+       kRTVIndexGuestOutputIntermediate0 = kRTVIndexSwapChainBuffer0 + kSwapChainBufferCount,
+ 
+-      kRTVCount = kRTVIndexGuestOutputIntermediate0 + kGuestOutputMailboxSize - 1,
++      // One RTV per intermediate texture (guest_output_intermediate_textures has kMaxGuestOutputPaintEffects - 1
++      // entries, like the view heap below); sizing this by the mailbox size left intermediates 2..4 outside the heap,
++      // and an FSR upscale of more than two passes then wrote RTVs past its end (driver access violation).
++      kRTVCount = kRTVIndexGuestOutputIntermediate0 + kMaxGuestOutputPaintEffects - 1,
+     };
+ 
+     enum ViewIndex : UINT {
+-- 
+2.55.0.windows.5
+

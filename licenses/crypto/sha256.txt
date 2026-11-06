@@ -1,0 +1,8 @@
+Notice from the top of thirdparty/crypto/sha256.h and sha256.cpp (ReXGlue SDK), copied verbatim:
+
+// //////////////////////////////////////////////////////////
+// sha256.h
+// Copyright (c) 2014,2015 Stephan Brumme. All rights reserved.
+// see http://create.stephan-brumme.com/disclaimer.html
+//
+// Altered for use in Xenia. Licensed under zlib license when acquired.

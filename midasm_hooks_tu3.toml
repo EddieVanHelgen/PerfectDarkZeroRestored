@@ -1,0 +1,226 @@
+# Mid-function hooks for the Title Update 3 build (tu3-base; included from
+# perfectdarkzerorecomp_manifest.toml instead of midasm_hooks.toml, whose
+# entries are launch addresses). Each entry calls a C++ function just before
+# the instruction at `address`; with jump_address_on_true the recompiled code
+# jumps to that address (inside the same function) when the function returns
+# true. Changing this file re-runs codegen on the next build. Addresses are
+# TU3 addresses.
+#
+# Interactive music (src/music/music_restore.cpp): the interactive half of the
+# music manager functions TU3 inlined into these callers.
+
+# Resume / start the layers (launch 821F8AC0 / 821F8570, music type 1): in
+# "resume all" (T 821F8BA0, channel 15), the pause menu's resume (T 821F9DB8),
+# level start (T 821F8E40), end of a cutscene (T 821F9720) and the sound cue
+# tick's marker event 0 (T 82207118).
+[[midasm_hook]]
+address = 0x821F8BF4
+name = "PdzMusicResume"
+
+[[midasm_hook]]
+address = 0x821F9E58
+name = "PdzMusicResume"
+
+[[midasm_hook]]
+address = 0x821F8F48
+name = "PdzMusicResume"
+
+[[midasm_hook]]
+address = 0x821F9814
+name = "PdzMusicResume"
+
+[[midasm_hook]]
+address = 0x82207220
+name = "PdzMusicResume"
+
+# Pause the layers (launch 821F8A78) in "pause all" (T 821FBC58, channel 15).
+[[midasm_hook]]
+address = 0x821FBD58
+name = "PdzMusicPause"
+
+# Cue markers 5 / 6 reach the layers (launch 821F8CB0 / 821F8D10) in the sound
+# cue tick (T 82207118): r6 = marker event, r10 = the cue.
+[[midasm_hook]]
+address = 0x822071B0
+name = "PdzMusicMarker"
+registers = ["r6", "r10"]
+
+# Game event 44, the stealth / action level (launch 821FC548), in the event
+# handler (T 82517A50): r28 = the event. True skips TU3's flag-only version.
+[[midasm_hook]]
+address = 0x82517B40
+name = "PdzMusicIntensityEvent"
+registers = ["r28"]
+jump_address_on_true = 0x82517B64
+
+# Sabotage bots (src/mod/cut_scenarios.cpp, pdz_sabotage_bots): the team brain
+# setup (T 82146B10) skips everything for DarkOps Sabotage (settings +4434 ==
+# 3, tested at 82146B5C): the bots joining the match (82147E78) and Rare's own
+# Sabotage team brain (8214A1A8). r11 = the DarkOps scenario; true skips that
+# test.
+[[midasm_hook]]
+address = 0x82146B5C
+name = "PdzSabotageBotsSetup"
+registers = ["r11"]
+jump_address_on_true = 0x82146B64
+
+# Up to 32 players offline (src/mod/player_limit.cpp): the max players list
+# router's offline answer (list 15 -> 13, then the router's exit) and the
+# base config's force-to-16 (skipped), plus a warning when the perception
+# slot table is full.
+[[midasm_hook]]
+address = 0x823BAA94
+name = "PdzPlayersMaxList"
+registers = ["r3"]
+jump_address_on_true = 0x823BAA98
+
+[[midasm_hook]]
+address = 0x823B92A4
+name = "PdzKeepPlayersMax"
+jump_address_on_true = 0x823B92E0
+
+[[midasm_hook]]
+address = 0x821899B4
+name = "PdzPerceptionSlotsFull"
+
+# Stage 2 M5 (src/mod/render/game_pace.cpp, pdz_cutscene_step): the cutscene
+# update (T 8221ED68, state 3 "playing") steps every channel by f31 from
+# 8221EE2C on. When the picture is not behind its clock (r3 + 66 <= r27) f31
+# is a fixed 1/60 s (8221EE24), which runs cutscenes at fps / 60 above 60
+# fps; the hook can replace it by the real time the cutscene's clock moved.
+# f31 = the step, r3 = the cutscene's clock (ms), r27 = the picture's time
+# (ms), r31 = the cutscene player. Both branches reach this address.
+[[midasm_hook]]
+address = 0x8221EE2C
+name = "PdzCutsceneStep"
+registers = ["f31", "r3", "r27", "r31"]
+
+# Stage 2 M5 (src/mod/render/game_pace.cpp, pdz_fix_frontend_pacing /
+# pdz_frontend_120): the present step sub_82141788 after the presentation
+# gate (sub_826DF7F0) and sub_82621520 returned. Outside state 21 (the front
+# end) Rare then spins until 82D3DB00+104 (guest vblanks since the gate
+# callback was last seen at a vblank) >= 2 (821418F8-82141904); that counter
+# lags the game thread, so two Swaps pass at once and the third waits about
+# four vblanks (m5_frontend.md). The hook paces the front end itself (N guest
+# vblanks after its previous Swap) and returns true to go straight to the
+# Swap (82141908); false (state 21, switch off, vsync off, no gate) leaves
+# Rare's code as it was. Also tags the frame for the pdz_timing split.
+[[midasm_hook]]
+address = 0x821418E4
+name = "PdzFrontendPace"
+jump_address_on_true = 0x82141908
+# Infection up to 32 players (pdz_infection_32, off; src/mod/cut_scenarios.cpp,
+# docs/TU3_BASE.md "Infection at 32 players"): the team brain fill
+# sub_82143D08's bot list holds 16 records with no bound (the 17th overran
+# the brain, logs 301-303). Before the record store at T 82143F4C, true
+# (r22 >= 16 with the switch on) jumps to the loop's next step at 82143F70.
+[[midasm_hook]]
+address = 0x82143F4C
+name = "PdzTeamBrainBotCap"
+registers = ["r22"]
+jump_address_on_true = 0x82143F70
+
+# Infection survivor groups at 17-32 players (pdz_infection_32; cut_scenarios.cpp
+# PdzInfectionGroupTotal, docs/TU3_BASE.md "Infection at 32 players"): Infection's
+# team brain constructor sub_82145D38 splits the survivors into groups whose sizes
+# sum to r29 (`li r29, 16` at T 82145DBC). Before T 82145DC0, r29 = the match's
+# player count when the switch is on and it is over 16 (set by the constructor's
+# REX_HOOK_RAW); else left at 16.
+[[midasm_hook]]
+address = 0x82145DC0
+name = "PdzInfectionGroupTotal"
+registers = ["r29"]
+
+# Polish 6 (src/mod/render/sun_shadows.cpp, pdz_shadow_distance_scale): the sun
+# shadow setup (T 8260C0D8 = launch 825FC758, BUG_AUDIT VR5) stores the fade
+# start (f13 = 1600.0, at 8260C3CC) and the far cascade's end = the cut-off
+# (f26 = 2000.0, loaded at 8260C3D4, stored at 8260C420) into the light. The
+# constants are shared (AI code reads them too), so the hooks scale the
+# registers instead; with the scale at 1 they return without touching them.
+[[midasm_hook]]
+address = 0x8260C3CC
+name = "PdzShadowFadeStart"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x8260C3D8
+name = "PdzShadowFarEnd"
+registers = ["f26"]
+
+# Polish 6b (src/mod/render/sun_shadows.cpp, pdz_shadow_bias_scale): the game's
+# shadow bias is a world-unit slope bias in the mask shader (literal c13); the
+# far cascade's texels grow with the distance scale, so its light depth range
+# is stretched by t instead (z column of the ortho matrix the fit sub_8260D518
+# built at r1 + 288, divided by t before the loop at 8260C5A8 copies it; r28 =
+# cascade, 1 = far): the same normalized bias then covers t times the depth.
+# With t = 1 the hook returns without a write.
+[[midasm_hook]]
+address = 0x8260C568
+name = "PdzShadowFarDepthRange"
+registers = ["r28", "r1"]
+
+# Polish 6b (pdz_shadow_far_pcf, native renderer only): after the mask pass's
+# SetPixelShader (T 826079A8 in sub_82607470) the PCF radius goes into the
+# unused c13.z the native renderer's patched mask shader reads. Off (0, the
+# default) or without the native renderer: no write.
+[[midasm_hook]]
+address = 0x826079AC
+name = "PdzShadowMaskConstants"
+
+# Polish 6c (src/mod/render/sun_shadows.cpp, pdz_shadow_split_follow, on by
+# default but only with pdz_shadow_distance_scale above 1): f27 = the near
+# cascade's end (300.0, loaded at 8260C3C4, stored as the split at 8260C408)
+# is scaled with the distance. Scale 1 or the switch off: no write.
+[[midasm_hook]]
+address = 0x8260C3D0
+name = "PdzShadowSplit"
+registers = ["f27"]
+
+# Polish 6c (pdz_shadow_stable, off by default): rotation-stable cascades.
+# After the LookAt (8260C37C) built the light view at r26 (82FBDAC0) in view
+# space, it is turned about its z axis so a world axis maps to light +y (r23 =
+# world->view). After the ortho fit and PdzShadowFarDepthRange, the cascade's
+# box (r1 + 288, elements 0 5 12 13) becomes a square around the view slice's
+# bounding sphere, snapped to whole 1344-grid texels from the world origin.
+# Off: no read, no write.
+[[midasm_hook]]
+address = 0x8260C380
+name = "PdzShadowStableBasis"
+registers = ["r23", "r26"]
+
+[[midasm_hook]]
+address = 0x8260C56C
+name = "PdzShadowStableBox"
+registers = ["r28", "r1", "r23", "r26"]
+
+# Polish 6d (src/mod/render/sun_shadows.cpp, pdz_shadow_distance_scale): the
+# shadow casters. The visibility pass (sub_82628888) flags an object as a
+# caster only if its bounding sphere touches a box built (sub_82629B78) from
+# three values the setup stores in the light: P0 = 10 m ahead of the camera
+# (light + 1472 + 12 r10), P1 = P0 + 100 m along the light (+ 1568) and the
+# half width 1414 cm (light + r11, stored at 8260C200). After that store the
+# hook moves P0 / P1 k times as far ahead and scales the half width by k
+# (r28 = the camera matrix, r31 = the light); with the scale at 1 it returns
+# without a read or write.
+[[midasm_hook]]
+address = 0x8260C204
+name = "PdzShadowCasterBox"
+registers = ["r31", "r10", "r11", "r28"]
+
+# Polish 6d, the caster counter (pdz_frame_timing only; reads registers, writes
+# nothing in the guest): the shadow pass sub_8260C8C0's start (after its
+# prologue) and end (its epilogue, reached by both paths), and the object
+# renderer sub_824119A0's selection count (r20) in the caster passes (r16 = 2,
+# r15 = 0x4001), after its selection loop.
+[[midasm_hook]]
+address = 0x8260C8F4
+name = "PdzShadowPassBegin"
+
+[[midasm_hook]]
+address = 0x8260CF5C
+name = "PdzShadowPassEnd"
+
+[[midasm_hook]]
+address = 0x82411BEC
+name = "PdzShadowCasterCount"
+registers = ["r15", "r16", "r20"]

@@ -1,0 +1,113 @@
+# Boot -> mission 12 BRIDGE | ASSAULT for timing (PERF_FOR_EVERYONE.md; from BRIDGE_HITCH.md's fight script): 12 DOWN
+# presses on MISSION SELECT, A through briefing / loading / cutscene to 115 s, then RT every 0.6 s while walking and
+# turning. God mode on the command line.
+press 8.0 A         # Microsoft logo / Rare intro just starting: normally ignored
+press 10.0 A        # Rare intro video: skips it
+press 12.0 A        # frontend loading: normally lost
+press 14.0 A        # PRESS START title -> main menu
+press 16.0 A        # main menu, Campaign -> MISSION MODE
+press 18.0 A        # MISSION MODE, Solo Agent -> MISSION SELECT (MISSION 0 DATACORE, up by about 21 s)
+press 24.0 DOWN     # MISSION SELECT -> 1 NIGHTCLUB | STAKEOUT
+press 26.5 DOWN     # MISSION SELECT -> 2 SUBWAY | RETRIEVAL
+press 29.0 DOWN     # MISSION SELECT -> 3 ROOFTOPS | ESCAPE
+press 31.5 DOWN     # MISSION SELECT -> 4 MANSION | INFILTRATION
+press 34.0 DOWN     # MISSION SELECT -> 5 LABORATORY | RESCUE
+press 36.5 DOWN     # MISSION SELECT -> 6 RIVER | EXTRACTION
+press 39.0 DOWN     # MISSION SELECT -> 7 TRINITY | INFILTRATION
+press 41.5 DOWN     # MISSION SELECT -> 8 TRINITY | ESCAPE
+press 44.0 DOWN     # MISSION SELECT -> 9 JUNGLE | STORM
+press 46.5 DOWN     # MISSION SELECT -> 10 TEMPLE | SURVEILLANCE
+press 49.0 DOWN     # MISSION SELECT -> 11 OUTPOST | RESCUE
+press 51.5 DOWN     # MISSION SELECT -> 12 BRIDGE | ASSAULT
+press 54.0 A        # MISSION SELECT: choose BRIDGE | ASSAULT
+repeat 56.0 115.0 2.0 A 0.15   # setup / briefing / START MISSION / loading / cutscene skips
+repeat 115.0 485.0 0.6 RT 0.35
+stick 115.0 6.0 0 14000 0 0
+stick 121.0 1.5 0 0 9000 0
+stick 122.5 6.0 0 14000 0 0
+stick 128.5 1.5 0 0 -9000 0
+stick 130.0 6.0 0 14000 0 0
+stick 136.0 2.0 0 0 9000 0
+stick 138.0 6.0 0 14000 0 0
+stick 144.0 1.5 0 0 9000 0
+stick 145.5 6.0 0 14000 0 0
+stick 151.5 3.0 0 0 9000 0
+stick 154.5 6.0 0 14000 0 0
+stick 160.5 1.5 0 0 -9000 0
+stick 162.0 6.0 0 14000 0 0
+stick 168.0 1.5 0 0 -9000 0
+stick 169.5 6.0 0 14000 0 0
+stick 175.5 2.0 0 0 9000 0
+stick 177.5 8.0 14000 0 0 0
+stick 185.5 8.0 -14000 0 0 0
+stick 193.5 6.0 0 14000 0 0
+stick 199.5 1.5 0 0 9000 0
+stick 201.0 6.0 0 14000 0 0
+stick 207.0 1.5 0 0 -9000 0
+stick 208.5 6.0 0 14000 0 0
+stick 214.5 3.0 0 0 9000 0
+stick 217.5 6.0 0 14000 0 0
+stick 223.5 1.5 0 0 9000 0
+stick 225.0 6.0 0 14000 0 0
+stick 231.0 1.5 0 0 -9000 0
+stick 232.5 6.0 0 14000 0 0
+stick 238.5 2.0 0 0 9000 0
+stick 240.5 6.0 0 14000 0 0
+stick 246.5 1.5 0 0 -9000 0
+stick 248.0 6.0 0 -14000 0 0
+stick 254.0 6.0 0 -14000 0 0
+stick 260.0 1.5 0 0 9000 0
+stick 261.5 6.0 0 14000 0 0
+stick 267.5 1.5 0 0 9000 0
+stick 269.0 6.0 0 14000 0 0
+stick 275.0 2.0 0 0 -9000 0
+stick 277.0 6.0 0 14000 0 0
+stick 283.0 1.5 0 0 9000 0
+stick 284.5 6.0 0 14000 0 0
+stick 290.5 3.0 0 0 -9000 0
+stick 293.5 6.0 0 14000 0 0
+stick 299.5 1.5 0 0 9000 0
+stick 301.0 6.0 0 14000 0 0
+stick 307.0 1.5 0 0 9000 0
+stick 308.5 6.0 0 14000 0 0
+stick 314.5 2.0 0 0 -9000 0
+stick 316.5 8.0 -14000 0 0 0
+stick 324.5 8.0 14000 0 0 0
+stick 332.5 6.0 0 14000 0 0
+stick 338.5 1.5 0 0 9000 0
+stick 340.0 6.0 0 14000 0 0
+stick 346.0 1.5 0 0 -9000 0
+stick 347.5 6.0 0 14000 0 0
+stick 353.5 3.0 0 0 9000 0
+stick 356.5 6.0 0 14000 0 0
+stick 362.5 1.5 0 0 9000 0
+stick 364.0 6.0 0 14000 0 0
+stick 370.0 1.5 0 0 -9000 0
+stick 371.5 6.0 0 14000 0 0
+stick 377.5 2.0 0 0 9000 0
+stick 379.5 6.0 0 14000 0 0
+stick 385.5 1.5 0 0 -9000 0
+stick 387.0 6.0 0 -14000 0 0
+stick 393.0 6.0 0 -14000 0 0
+stick 399.0 1.5 0 0 9000 0
+stick 400.5 6.0 0 14000 0 0
+stick 406.5 1.5 0 0 9000 0
+stick 408.0 6.0 0 14000 0 0
+stick 414.0 2.0 0 0 -9000 0
+stick 416.0 6.0 0 14000 0 0
+stick 422.0 1.5 0 0 9000 0
+stick 423.5 6.0 0 14000 0 0
+stick 429.5 3.0 0 0 -9000 0
+stick 432.5 6.0 0 14000 0 0
+stick 438.5 1.5 0 0 9000 0
+stick 440.0 6.0 0 14000 0 0
+stick 446.0 1.5 0 0 9000 0
+stick 447.5 6.0 0 14000 0 0
+stick 453.5 2.0 0 0 -9000 0
+stick 455.5 6.0 0 14000 0 0
+stick 461.5 1.5 0 0 9000 0
+stick 463.0 6.0 0 14000 0 0
+stick 469.0 1.5 0 0 -9000 0
+stick 470.5 6.0 0 14000 0 0
+stick 476.5 2.0 0 0 9000 0
+stick 478.5 6.0 0 14000 0 0

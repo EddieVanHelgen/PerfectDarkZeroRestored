@@ -1,45 +1,51 @@
-# Manual function boundaries for addresses that the auto-analyzer didn't
-# discover as functions on its own (only reached via plain `b`, not `bl`,
-# so no call-graph edge pointed at them). Leaving the table empty lets
-# codegen find the natural boundaries itself (size=0 -> discover via region).
+# Manual function boundaries for Title Update 3 (default.xex + default.xexp,
+# media 6A78E206): addresses that the auto-analyzer doesn't discover as
+# functions on its own (only reached via plain `b`, not `bl`).
 #
-# Found via: rexglue codegen (UnresolvedCall errors during Validate phase).
+# Derived from the launch exe's list (tu3-base branch, 2026-10-20): each
+# launch entry mapped through the launch -> TU3 function comparison, or
+# found in the TU3 image by its instruction bytes where the containing
+# function changed.
 
 [functions]
-0x8250B06C = {}
-0x82CAB0D8 = {}
-0x827308D8 = {}
-0x8269F950 = {}
-0x82A4F5E0 = {}
-0x82C287A8 = {}
-0x82C0E450 = {}
-0x823C3040 = {}
-0x8226C948 = {}
-0x821CE820 = {}
-0x821CFE68 = {}
-0x821CF368 = {}
-0x821D2E18 = {}
-0x8250AF28 = {}
-0x822E37E8 = {}
-0x823A30B8 = {}
-0x82513240 = {}
-0x8251C820 = {}
-0x82988C60 = {}
-0x82988C78 = {}
-0x829BE180 = {}
+0x82519714 = {}
+0x82CB2FF0 = {}
+0x827405C0 = {}
+0x826AF6A0 = {}
+0x82A5F350 = {}
+0x82C38FA8 = {}
+0x82C1E1B0 = {}
+0x823CC880 = {}
+0x82273EB8 = {}
+0x821D58E8 = {}
+0x821D6F30 = {}
+0x821D6430 = {}
+0x821D9EE0 = {}
+0x825195D0 = {}
+0x822EB570 = {}
+0x823AB798 = {}
+0x82521978 = {}
+0x8252AF50 = {}
+0x829989C0 = {}
+0x829989D8 = {}
+0x829CDEE0 = {}
 
-0x82484DBC = {}
-0x826640F0 = {}
-0x82664104 = {}
-0x82664124 = {}
-0x82664134 = {}
-0x8266415C = {}
-0x8266417C = {}
-0x82664190 = {}
-0x826641A0 = {}
-# Shared switch-handler blocks reached from sub_82401A40 and sub_82401B08.
-0x82401B58 = { parent = 0x82401A40, end = 0x82401F90 }
-0x82401DA8 = { parent = 0x82401A40, end = 0x82401F90 }
-# found during campaign progress
-0x8223D550 = {}
-0x8223D568 = {}
+0x824919BC = {}
+# launch 826640F0.. (+0xFDF8, matched by instruction bytes)
+0x82673EE8 = {}
+0x82673EFC = {}
+0x82673F1C = {}
+0x82673F2C = {}
+0x82673F54 = {}
+0x82673F74 = {}
+0x82673F88 = {}
+0x82673F98 = {}
+# Shared blocks reached from sub_8240CA18 (launch 82401B58 / 82401DA8 from
+# sub_82401A40); in TU3 they sit in sub_8240CAE0.
+0x8240CB30 = {}
+0x8240CD80 = {}
+# launch 8223D550 / 8223D568 (found during campaign progress)
+0x82244818 = {}
+0x82244830 = {}
+# a bot's enemy target setter (pdz_test_ai_ignores_player hook); reached through the bot vtable
+0x8252CEB8 = {}

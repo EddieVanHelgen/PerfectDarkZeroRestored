@@ -15,7 +15,9 @@ namespace utils
     fs::path dir = rex::filesystem::GetExecutableFolder();
     for (int i = 0; i < 6 && !dir.empty() && dir.has_parent_path(); ++i)
     {
-      if (fs::exists(dir / "perfectdarkzerorecomp_manifest.toml") || fs::exists(dir / "assets"))
+      // A release folder (2026-11-03): no repo, but settings\hardware.toml next to the exe.
+      if (fs::exists(dir / "perfectdarkzerorecomp_manifest.toml") || fs::exists(dir / "assets") ||
+          fs::exists(dir / "settings" / "hardware.toml"))
       {
         break;
       }

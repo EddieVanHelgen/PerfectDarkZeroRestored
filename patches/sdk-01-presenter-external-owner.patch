@@ -1,0 +1,73 @@
+From e1ec2d35d449210e99a0497d8b056ca1ceb43415 Mon Sep 17 00:00:00 2001
+From: EddieVanHelgen <351187229+EddieVanHelgen@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 01:41:04 +0000
+Subject: [PATCH] Presenter: external guest-output owner (a native renderer in
+ the title suppresses the GPU plugin's refresh)
+
+---
+ include/rex/ui/presenter.h |  9 +++++++++
+ src/ui/presenter.cpp       | 17 +++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+index 1dd3f12..930576c 100644
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -349,6 +349,14 @@ class Presenter {
+   bool RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuffer_height,
+                           uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
+                           std::function<bool(GuestOutputRefreshContext& context)> refresher);
++  // External guest output (a native renderer in the title, PDZ stage 1): while set, only
++  // RefreshGuestOutput calls from the owning thread are honoured; calls from other threads
++  // (the GPU plugin's swap) return false without touching the mailbox, so two producers never
++  // refresh the same presenter at once (2026-10-26: a concurrent refresh crashed the driver).
++  // (Defined in presenter.cpp, not inline: the static member lives in rexruntime.dll and the
++  // title executable only links exported functions.)
++  static void SetGuestOutputExternalOwner(bool external);
++  static bool IsGuestOutputExternal();
+   // The implementation must be callable from any thread, including from
+   // multiple at the same time, and it should acquire the latest guest output
+   // image via ConsumeGuestOutput.
+@@ -695,6 +703,7 @@ class Presenter {
+   // than 8 bits of precision per channel (though the image provided by the
+   // refresher may still have a higher storage precision) - if not written, it
+   // will be assumed to be false.
++  static std::atomic<std::thread::id> guest_output_external_owner_;
+   virtual bool RefreshGuestOutputImpl(
+       uint32_t mailbox_index, uint32_t frontbuffer_width, uint32_t frontbuffer_height,
+       std::function<bool(GuestOutputRefreshContext& context)> refresher, bool& is_8bpc_out_ref) = 0;
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index df3e6d1..f2935bc 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -584,10 +584,27 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+   }
+ }
+ 
++std::atomic<std::thread::id> Presenter::guest_output_external_owner_{};
++
++void Presenter::SetGuestOutputExternalOwner(bool external) {
++  guest_output_external_owner_.store(external ? std::this_thread::get_id() : std::thread::id(),
++                                     std::memory_order_release);
++}
++
++bool Presenter::IsGuestOutputExternal() {
++  return guest_output_external_owner_.load(std::memory_order_acquire) != std::thread::id();
++}
++
+ bool Presenter::RefreshGuestOutput(
+     uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t display_aspect_ratio_x,
+     uint32_t display_aspect_ratio_y,
+     std::function<bool(GuestOutputRefreshContext& context)> refresher) {
++  {
++    const std::thread::id owner = guest_output_external_owner_.load(std::memory_order_acquire);
++    if (owner != std::thread::id() && owner != std::this_thread::get_id()) {
++      return false;  // an external renderer owns the guest output (see presenter.h)
++    }
++  }
+   GuestOutputProperties& writable_properties =
+       guest_output_properties_[guest_output_mailbox_writable_];
+   writable_properties.frontbuffer_width = frontbuffer_width;
+-- 
+2.55.0.windows.5
+

@@ -1,129 +1,187 @@
-# PerfectDarkZeroRecomp
+# Perfect Dark Zero Restored
+
+Perfect Dark Zero Restored (PDZ Restored) is a native PC version of Rare's Xbox 360 game Perfect Dark Zero.
+
+As well as the PC version itself, it restores two multiplayer modes Rare left unfinished, Plant the Flag and Protection,
+gets bots playing Sabotage, and allows matches with up to 31 bots.
+
+The game's own code, as updated by Title Update 3, has been recompiled into a Windows program. A native Direct3D 12
+renderer draws the graphics. There is no emulator.
+
+It is built on [nikolaygorb's PerfectDarkZeroRecomp](https://github.com/nikolaygorb/PerfectDarkZeroRecomp) and the
+[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
 
 <div align="center">
-  <img src="assets/icon.png" alt="PerfectDarkZeroRecomp" width="480">
+  <img src="docs/settings_window/settings_display_100pc.png" alt="The PDZ Restored settings window, Display tab" width="640">
 </div>
 
-A static recompilation of [**Perfect Dark Zero**](https://en.wikipedia.org/wiki/Perfect_Dark_Zero)
-(Xbox 360, 2005, Title ID `4D5307D3`) to native PC, built on the
-[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). The game's PowerPC code
-is translated into C++ and compiled. There is no emulator.
+## Download
 
-> This project is not affiliated with Microsoft or Rare. It contains no game
-> files: you need your own legally owned copy of the game.
+Get the latest version from the
+[Releases page](https://github.com/EddieVanHelgen/PerfectDarkZeroRestored/releases). Unzip it into its own folder
+and read the `README.md` inside.
+
+## What you need
+
+- Windows 10 or 11, 64-bit.
+- A processor with AVX2: Intel 4th generation ("Haswell", 2013) or newer, or AMD Ryzen or newer.
+- A graphics card that supports DirectX 12.
+- The [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+- Your own Perfect Dark Zero disc, as a disc image (`.iso`) or its extracted files. Any of the five retail discs
+  works.
+- Title Update 3 for Perfect Dark Zero, copied from your own Xbox 360. Any disc's Title Update 3 works.
+- Optional: the two official map packs, copied from your own Xbox 360.
+
+No game files are included, and none can be downloaded through PDZ Restored.
+
+## Setting it up
+
+1. Unzip the release into its own folder, for example `C:\Games\PDZRestored`.
+2. Put your disc image (or the extracted disc) and the Title Update 3 file into the `game` folder.
+3. Start `PDZRestored.exe`. The first start checks your files and prepares them. This takes about 20 seconds.
+4. The settings window opens. Add your map packs on the Map packs tab if you have them, then press Play.
+
+## Features
+
+- **Two cut multiplayer modes restored.** Rare left Plant the Flag and Protection unfinished. Both are now
+  finished and playable, with bots.
+- **Bots in Sabotage.** Sabotage shipped without bot support. Now bots play it too.
+- **Up to 31 bots** in a match, and 32-player Infection. Bots can use turrets. Facility and Ruin stay 8-player maps,
+  as Rare made them.
+- Both official map packs, from your own copies. A known fault in some copies of Map Pack One is repaired when you
+  install it.
+- A native Direct3D 12 renderer that matches the Xbox 360 picture, up to 4K.
+- 120 fps in the campaign, if your PC and screen can manage it. Multiplayer runs at 60 fps.
+- Built on Title Update 3, with all of Rare's fixes.
+- Dozens of bug fixes, including aiming, weapons, enemy AI, cover, missing speech and sounds, and menus.
+  Cutscenes stay in sync with their sound.
+- A music choice for multiplayer matches, which can also play your own MP3s.
+- A settings window with display, frame rate, map pack and control options, including a field of view slider.
+- Safe mode, for when something goes wrong.
+- Designed for a controller. Mouse and keyboard work too, and every key, mouse button and the wheel can be rebound.
 
 ## Status
 
-- Fully playable on Windows: video, audio, gameplay, achievements and saves.
-- Keyboard and mouse support.
-- Optional patches: 60 FPS (on by default) and 16:9.
-- Third-person camera and language selection, see [Mods](#mods).
+0.9.1 is an early release. So far it has been tested on one PC (RTX 5090, 4K 120 Hz screen).
 
-## Requirements
+Reports from other PCs are very welcome, especially with AMD or Intel graphics cards or older processors. Please
+[open an issue](https://github.com/EddieVanHelgen/PerfectDarkZeroRestored/issues) and attach the newest log from
+the `logs` folder next to `PDZRestored.exe`. The settings window's Advanced tab has a button that opens it.
 
-- CMake 3.25+, Ninja, and Clang/LLVM. MSVC alone won't build this.
-- The game's files, extracted from your disc or ISO with
-  [ABGX360](https://github.com/BakasuraRCE/abgx360) or
-  [extract-xiso](https://github.com/XboxDev/extract-xiso/releases).
+Known issues are listed in the release's `README.md` ([tools/release/README.md](tools/release/README.md)).
 
-## Build
+## Future plans
 
-1. Clone the repo with its submodule. The ReXGlue SDK is built from source
-   (`thirdparty/rexglue-sdk`).
+These are hopes for later versions, not promises:
+
+- **Duel and Team Duel**, another multiplayer mode Rare left unfinished.
+- **Round-based Eradication**, a cut version of Eradication that is still in the game's code.
+- **Artefact**, a carry-the-item mode Rare cut early. Only its announcer lines survive, so it would have to be
+  rebuilt.
+- **Online play** with friends over the internet.
+
+## Building from source
+
+This part is for developers. Players only need the release zip.
+
+### Requirements
+
+- Windows 10 or 11, 64-bit. The Linux and macOS CMake presets come from upstream and are not tested here.
+- CMake 3.25 or newer, Ninja, and Clang/LLVM. MSVC alone won't build it. Build from a Visual Studio developer
+  command prompt so Clang finds the Windows SDK.
+- Python 3, for the scripts in `tools/`.
+- The game's files, extracted from your own disc, to recompile from:
+  - `assets/default.xex` and the rest of the disc (`assets/pdz/...`).
+    [extract-xiso](https://github.com/XboxDev/extract-xiso/releases) can extract a disc image.
+  - Title Update 3's `default.xexp`, as `assets/default.xexp`. The code generator applies it.
+
+  The code in this repository is generated from media ID `6A78E206` (`default.xex` SHA-1
+  `c24ae39fb18a22de1f18e61dc498393d25eadcaf`) and its Title Update 3 (`TU_16L61UJ_000000G000000.00000000000O4`,
+  `default.xexp` SHA-1 `b148ab898498a4dbdd494ddaf0e7d826612a6126`). Every disc and Title Update 3 pairing gives
+  the same patched program, see [docs/RELEASE_FIRST_RUN.md](docs/RELEASE_FIRST_RUN.md). `assets/` is gitignored
+  apart from its README and icon.
+
+### Build
+
+1. Clone the repository with its submodules. The ReXGlue SDK is built from source in `thirdparty/rexglue-sdk`.
 
    ```
-   git clone --recursive https://github.com/nikolaygorb/PerfectDarkZeroRecomp.git
+   git clone --recursive https://github.com/EddieVanHelgen/PerfectDarkZeroRestored.git
    ```
 
-   If you already cloned without it, run `git submodule update --init --recursive`.
-2. Copy the extracted game files into `assets/`, so the path is
-   `assets/default.xex`. `assets/` is gitignored.
-3. Build:
+   If you cloned without `--recursive`, run `git submodule update --init --recursive`.
+2. Put the game's files into `assets/` as described above.
+3. Configure and build:
 
    ```
-   cmake --preset win-amd64-release
-   cmake --build --preset win-amd64-release
+   cmake --preset win-amd64-release-v3lto
+   cmake --build --preset win-amd64-release-v3lto
    ```
 
-   There are also Linux and macOS presets (`linux-amd64-*`, `mac-*`), but only
-   Windows is tested. Codegen (`default.xex` → `generated/`) runs automatically
-   as part of the build.
+   The code generator runs as part of the build and writes `generated/`.
+   - `win-amd64-release-v3lto`: AVX2 (x86-64-v3) with ThinLTO, like the release.
+   - `win-amd64-release-v3`: the same without LTO, so it links faster.
+   - `win-amd64-release`: for any x86-64 processor.
 
-Check that your dump is the expected retail release: XEX CRC `375EC9BB`,
-Media ID `6D6481013A4FDD3DA32BD2D0-750FF1D9`.
+   The release is also built with profile-guided optimisation (`win-amd64-release-pgousev3`). That needs a local
+   `.profdata` profile of your own.
 
-## Run
+Title Update 3 removed the interactive (stealth / action) music. This build can restore it from
+`src/music/music_lifted.inc`, which `tools/lift_music.py` makes from your own launch version of the game. That file
+is not in the repository. Without it, the build plays Title Update 3's music.
 
-```
-out\build\win-amd64-release\perfectdarkzerorecomp.exe
-```
-
-Game files are found in `<repo>/assets` automatically; use `--game_data_root`
-to point somewhere else. Logs go to `out\build\<preset>\logs\`.
-
-## Mods
-
-### Third-person camera
-
-Press **V** in game to switch between first and third person. Set
-`pdz_tp_enable = true` in `hardware.toml` to start in third person. Camera
-offset and the rest of the options are in [`src/mod/README.md`](src/mod/README.md).
-
-### Language
-
-Set `user_language` in `hardware.toml` and restart the game:
+### Run
 
 ```
-# 1 = English, 3 = German, 4 = French
-user_language = 1   
+out\build\win-amd64-release-v3lto\PDZRestored.exe
 ```
 
-Only languages your copy of the game includes will work (check
-`assets/pdz/ASSETS/loc/`). Anything else falls back to English.
+- Game files are read from `<repo>\assets`, found by searching upwards from the exe. `--game_data_root` points
+  somewhere else.
+- Title Update 3's data files are read from `Documents\perfectdarkzerorecomp-tu3\update`
+  (`update\Pdz\Assets\PackageData\1726605008.pkg` must exist). `--update_data_root` points somewhere else.
+- If the files aren't found there, the exe runs the release's first-run setup instead: it looks in `game\` next to
+  the exe and prepares the files in `data\`.
+- Saves and the shader cache are in `Documents\perfectdarkzerorecomp-tu3`.
+- Logs are written to `logs\` next to the exe, as `PDZRestored_NNN.log`.
+- `tools/release/stage_release.py` makes the release folder and zip. It refuses game files, translated shaders,
+  audio, and Microsoft files other than `dxcompiler.dll` and `dxil.dll`.
 
-### Local player profiles
+### Settings and documentation
 
-Press **F9** to open the profile list. You can create profiles, rename them and
-pick the one to play next time. Each profile has its own saves and achievements.
-A new profile or name takes effect after you restart the game.
-
-The first profile, "User", keeps the saves you already have. Other profiles
-save to `profiles/<id>/` in the user data folder (`Documents/perfectdarkzerorecomp`
-by default), so renaming a profile doesn't move its saves. The list is kept in
-`local_profiles.toml` in that folder. Settings and the shader cache are shared.
-
-Names are 1–15 characters: letters, digits, spaces, `-` and `_`. To use another
-key, change `bind_local_profiles` in `settings/mapping.toml`.
-
-## Configuration
-
-All settings live in [`settings/`](settings/README.md) and are loaded at startup.
-Most can also be changed in game from the F4 overlay.
-
-| File | What it covers |
-|---|---|
-| `hardware.toml` | renderer, window, patches (`pdz_fps60_unlock`, `pdz_aspect_ratio_16_9`), `pdz_gpu_wait_mode`, third-person camera (`pdz_tp_*`), language (`user_language`) |
-| `mapping.toml` | input backend, keyboard and mouse (`mnk_*`), key bindings including `bind_third_person` |
-
-## Development notes
-
-- Set `dev_debug_runtime = true` to stub every unknown function and log
-  missing ones to `logs/stub_sweep.txt` and `logs/missed_functions.txt`.
-- Game-specific hooks are in `src/`: patches, the GPU wait hook in `render/`,
-  and the camera mod in `mod/`.
+- The settings are in [`settings/`](settings/README.md) and are read at start-up. `hardware.toml` covers the
+  renderer, window, frame rate, fixes and options. `mapping.toml` covers the keyboard and mouse. The settings window
+  (hold Shift while starting) writes some of them. The release ships `settings/release/hardware.toml`.
+- Confirmed bug fixes are on by default. Most enhancements are off unless the release settings turn them on.
+  What each fix does and why: [docs/BUG_AUDIT.md](docs/BUG_AUDIT.md) and [src/mod/README.md](src/mod/README.md).
+- More notes: [docs/MAP_PACKS.md](docs/MAP_PACKS.md), [docs/MOUSE_KEYBOARD.md](docs/MOUSE_KEYBOARD.md),
+  [docs/MP_MUSIC_CUSTOM.md](docs/MP_MUSIC_CUSTOM.md), [docs/MULTIPLAYER_GUIDE.md](docs/MULTIPLAYER_GUIDE.md),
+  [docs/RELEASE_FIRST_RUN.md](docs/RELEASE_FIRST_RUN.md), [docs/RELEASE_SHADERS.md](docs/RELEASE_SHADERS.md),
+  [docs/SETTINGS_WINDOW.md](docs/SETTINGS_WINDOW.md).
 
 ## Credits
 
-- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), whose runtime is
-  derived from [Xenia](https://github.com/xenia-project/xenia)
-- [xenia-canary/game-patches](https://github.com/xenia-canary/game-patches),
-  the source of the 60 FPS and 16:9 patches
-- [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB),
-  for `settings/gamecontrollerdb.txt` (zlib license)
-- [ABGX360](https://github.com/BakasuraRCE/abgx360) and
-  [extract-xiso](https://github.com/XboxDev/extract-xiso), for dumping the game
+- **Rare**, who made Perfect Dark Zero.
+- **nikolaygorb**, for [PerfectDarkZeroRecomp](https://github.com/nikolaygorb/PerfectDarkZeroRecomp), the
+  recompilation this project grew from (MIT licence), and **2023PerfectDark** for its local profile manager.
+- The **[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk)** and its authors. Its runtime is derived from
+  [Xenia](https://github.com/xenia-project/xenia).
+- **[XenosRecomp](https://github.com/hedge-dev/XenosRecomp)** by hedge-dev, the shader translator built into
+  PDZ Restored.
+- **Perfect Dark Zero: Reinstated** (2023PerfectDark / PerfectDark023), for finding that Rare's physics step is a
+  fixed 1/60 s.
+- **[xenia-canary/game-patches](https://github.com/xenia-canary/game-patches)**, where the 60 fps and 16:9 patches
+  come from.
+- The authors of the other libraries, listed with their licences in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+  and [docs/CREDITS.md](docs/CREDITS.md).
 
-## License
+PDZ Restored is an unofficial fan project. Perfect Dark Zero belongs to Rare and Microsoft, and this project is not
+made, approved or supported by them.
 
-MIT. See [LICENSE](LICENSE). This applies to this project's own code only, not
-to the game or its assets.
+PDZ Restored was made with a lot of help from Claude (Anthropic's AI assistant).
+
+Made by a fan, out of love for Perfect Dark Zero and respect for the people at Rare who made it.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). It covers this project's own code only, not the game or its assets.

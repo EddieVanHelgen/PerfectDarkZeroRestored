@@ -89,6 +89,54 @@
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
+            "name": "win-amd64-release-base",
+            "displayName": "Windows AMD64 Release, reference for the experiments: the default flags in its own folder",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-v3",
+            "displayName": "Windows AMD64 Release, experiment: x86-64-v3 (AVX2 / FMA / BMI2), no FP contraction",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "PDZ_CPU_V3": "ON", "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-lto",
+            "displayName": "Windows AMD64 Release, experiment: ThinLTO tuning (O3 LTO backend, LTO cache)",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "PDZ_THINLTO": "ON", "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-v3lto",
+            "displayName": "Windows AMD64 Release, experiment: x86-64-v3 + ThinLTO tuning",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "PDZ_CPU_V3": "ON", "PDZ_THINLTO": "ON", "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-nolto",
+            "displayName": "Windows AMD64 Release, reference: without the default ThinLTO",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "RDRRECOMP_ENABLE_LTO": "OFF", "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-pgogen",
+            "displayName": "Windows AMD64 Release, experiment: PGO training build (instrumented)",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "PDZ_PGO": "gen", "RDRRECOMP_ENABLE_LTO": "OFF", "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-pgouse",
+            "displayName": "Windows AMD64 Release, experiment: PGO-optimised build",
+            "inherits": "win-amd64-release",
+            "cacheVariables": { "PDZ_PGO": "use", "PDZ_PGO_PROFILE": "C:/Games/PDZRenderResearch/native/stage2/m5/pgo/pdz.profdata", "PDZ_SDK_OUT_IN_BUILD": "ON" }
+        },
+        {
+            "name": "win-amd64-release-pgousev3",
+            "displayName": "Windows AMD64 Release, experiment: PGO-optimised build with x86-64-v3",
+            "inherits": "win-amd64-release-pgouse",
+            "cacheVariables": { "PDZ_CPU_V3": "ON" }
+        },
+        {
             "name": "linux-amd64-debug",
             "displayName": "Linux AMD64 Debug",
             "inherits": "linux-base",
@@ -188,6 +236,14 @@
     "buildPresets": [
         { "name": "win-amd64-debug", "configurePreset": "win-amd64-debug" },
         { "name": "win-amd64-release", "configurePreset": "win-amd64-release" },
+        { "name": "win-amd64-release-base", "configurePreset": "win-amd64-release-base" },
+        { "name": "win-amd64-release-v3", "configurePreset": "win-amd64-release-v3" },
+        { "name": "win-amd64-release-v3lto", "configurePreset": "win-amd64-release-v3lto" },
+        { "name": "win-amd64-release-lto", "configurePreset": "win-amd64-release-lto" },
+        { "name": "win-amd64-release-nolto", "configurePreset": "win-amd64-release-nolto" },
+        { "name": "win-amd64-release-pgogen", "configurePreset": "win-amd64-release-pgogen" },
+        { "name": "win-amd64-release-pgouse", "configurePreset": "win-amd64-release-pgouse" },
+        { "name": "win-amd64-release-pgousev3", "configurePreset": "win-amd64-release-pgousev3" },
         { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
         { "name": "linux-amd64-debug", "configurePreset": "linux-amd64-debug" },
         { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },

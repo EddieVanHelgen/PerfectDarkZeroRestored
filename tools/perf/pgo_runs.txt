@@ -1,0 +1,14 @@
+# PGO training set (tools\perf\pgo_train.ps1 -Runs tools\perf\pgo_runs.txt): label | script | seconds | extra args.
+# Scripts in tools\perf\bench (the research mission scripts plus right-stick pans 95-233 s through the start area; the
+# 31 Oct training set): the heavy campaign levels at 120 (the 60 lock off), Datacore, Nightclub, the 31-bot match.
+# 2-3 Nov (PERF_FOR_EVERYONE.md): + Bridge and the Mansion fight; every run with pdz_native_memcpy=1.
+t_outpost | bench_11_outpost.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_rooftops | bench_03_rooftops.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_mansion | bench_04_mansion.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_jungle | bench_09_jungle.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_trinity2 | bench_08_trinity_escape.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_datacore | bench_00_datacore.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_nightclub | bench_01_nightclub.script | 250 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_mp31 | bench_mp31.script | 170 | --pdz_test_god_mode=true --pdz_random_seed=20261027 --pdz_test_mp_setup=bots=31,points=15,time=10,map=urban,scenario=dm --pdz_test_spawn_pad=0 --pdz_native_memcpy=1
+t_bridge | bench_12_bridge.script | 260 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_native_memcpy=1
+t_mansion_fight | bench_04_mansion_fight.script | 300 | --pdz_sp_60_levels=none --pdz_test_god_mode=true --pdz_random_seed=20261027 --pdz_native_memcpy=1

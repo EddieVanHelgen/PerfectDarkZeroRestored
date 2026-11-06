@@ -1,0 +1,442 @@
+# PDZ Restored: the release's settings file (settings/release/hardware.toml, shipped as settings\hardware.toml by
+# tools/release/stage_release.py). The settings window (PDZ Restored Settings, or hold Shift when starting) changes
+# only the lines in its own section at the end; everything else here is for advanced use and testing, with its
+# comment. The developer's own settings\hardware.toml in the repository is a different file.
+#
+# perfectdarkzerorecomp - hardware / rendering settings
+#
+# Loaded automatically at startup (see OnConfigurePaths in
+# src/perfectdarkzerorecomp_app.h) and rewritten by the in-game Settings
+# overlay's "Save to config" button. --flag on the command line and REX_*
+# environment variables always override values from this file - see
+# ../settings/README.md.
+#
+# Flat key = value only
+
+gpu_plugin = "xenos"
+
+# "any" (d3d12 - win default, vulkan - lin default)
+# "d3d12" / "vulkan"
+graphics_backend = "d3d12"
+vsync = true
+# Even frame pacing: present each game frame once at its vblank, phase-locked
+# to the display (or evenly timed on G-Sync/FreeSync). Needs vsync = true.
+# On by default; displays that aren't a multiple of 60 Hz use a steady timer.
+host_vblank_pacing = true
+
+# --- Input latency (late latch and poll on read are on; 0 / false = original) ---
+# F8 (bind_latency_ab) swaps late latch, poll on read and frames in flight
+# between these values and the originals; present_max_frame_latency and
+# host_vblank_pacing need a restart.
+# With host_vblank_pacing: present a frame that arrives up to this many ms
+# after a guest vblank for that vblank instead of the next one (PDZ swaps on
+# the vblank, so its frames land ~0.5 ms after it). Saves one frame (16.7 ms
+# at 60 fps). 0 = off.
+host_vblank_late_latch_ms = 3.0
+# SDL input: read the controller each time the game asks, instead of handing
+# it the state from the last UI-thread event pump (up to a frame old).
+input_poll_on_read = true
+# Guest frames the host GPU may lag the command processor (1-3). Only matters
+# when the host GPU is the bottleneck; lower = less latency, less throughput.
+gpu_max_frames_in_flight = 3
+# Presents queued ahead of the display (1-3, D3D12). 0 = DXGI default (3).
+# Restart after changing it.
+present_max_frame_latency = 0
+
+resolution_scale = 2
+present_effect = "fsr"
+present_fsr_sharpness_reduction = 0.2
+present_dither = false
+swap_post_effect = "smaa"
+async_shader_compilation = true
+native_2x_msaa = false
+anisotropic_override = 3
+
+texture_cache_memory_limit_soft = 1024
+texture_cache_memory_limit_hard = 4096
+clear_memory_page_state = false
+readback_memexport = false
+readback_memexport_fast = false
+host_present_from_non_ui_thread	= true
+
+window_width = 1920
+window_height = 1080
+fullscreen = true
+monitor = 0
+resolution = "1920x1080"
+
+render_target_path_d3d12 = "rov"
+store_shaders = true
+present_letterbox = true
+  
+d3d12_adapter = -1
+d3d12_allow_variable_refresh_rate_and_tearing = true
+d3d12_bindless = true
+d3d12_break_on_error = false
+d3d12_break_on_warning = false
+d3d12_debug = false
+d3d12_dxbc_disasm = false
+d3d12_dxbc_disasm_dxilconv = false
+d3d12_pipeline_creation_threads = -1
+d3d12_queue_priority = 2
+d3d12_submit_on_primary_buffer_end = true
+d3d12_tessellation_wireframe = false
+
+render_target_path_vulkan = "fbo"
+vulkan_log_debug_messages = false
+vulkan_allow_present_mode_immediate = true
+vulkan_allow_present_mode_fifo_relaxed = false
+vulkan_allow_present_mode_mailbox = false
+
+headless = false
+
+# trace, debug, info, warn, error
+log_level = "info"
+
+use_dedicated_xma_thread = false
+xma_decoder = "new"
+mount_cache = true
+framerate_limit = 0
+d3d12_readback_resolve = false
+readback_resolve = "none"
+
+gpu_allow_invalid_fetch_constants = true
+depth_bias_shader_offset = true
+
+# Frame pacing trace: guest vblank/swap and host present/vblank timestamps,
+# written to logs/frame_pacing.csv next to the exe. Diagnostic only. Also
+# logs an input->screen latency summary to the main log every ~10 s
+# (search the log for "frame_pacing:").
+frame_pacing_log = false
+
+# Perf CSV log path (per-frame metrics). Empty = disabled.
+# Only works when REXGLUE_ENABLE_PERF_COUNTERS is defined (non-Release).
+#perf_log_csv = "benchmark.csv"
+
+# Enable runtime debug tools (stub sweep, missing function scan).
+# Produces logs/missed_functions.txt and logs/stub_sweep.txt.
+dev_debug_runtime = false
+
+# Ported xenia-canary game-patches for PDZ retail (4D5307D3).
+# https://github.com/xenia-canary/game-patches/blob/main/patches/4D5307D3%20-%20Perfect%20Dark%20Zero.patch.toml
+pdz_fps60_unlock = true
+# Not 16:9: it changes the game's widescreen aspect from 16:9 to 2.39:1 for
+# ultrawide monitors. On a 16:9 screen it squashes the picture - leave off.
+pdz_aspect_ratio_16_9 = false
+
+# On-foot field of view (first and third person), x the original 58 degrees
+# (a 4:3 horizontal FOV: 45 vertical, ~73 across at 16:9). 1.1 = ~79
+# across; 1.2 = ~86.
+# Scopes keep their magnification relative to it. 1 = original (default).
+pdz_fov_scale = 1.0
+
+# 0 = busy spin (original), 1 = yield the core, 2 = sleep 200us
+pdz_gpu_wait_mode = 0
+
+# Third-person camera, toggled in game with bind_third_person (V).
+# Camera-local offset in ~cm; z < 0 = behind. See src/mod/README.md.
+pdz_tp_enable = false
+pdz_tp_offset_x = -80.0
+pdz_tp_offset_y = 10.0
+pdz_tp_offset_z = -320.0
+
+# --- Right-stick look, on foot (defaults = original except
+# pdz_fastlook_zoom_brake, which is on; F6 compares against the original) ---
+# All of these apply instantly, also from the F4 overlay. F6 (bind_look_ab)
+# switches them all on and off again (A/B against the original).
+# On by default for pdz_fastlook_zoom_brake; every other option below is at
+# its original value. false = original look.
+pdz_look_tuning = true
+# See src/mod/README.md ("Look tuning"). Original top speed at default
+# sensitivity is ~65 deg/s, up to 180 deg/s with fast look after ~1 s.
+# Turn speed multiplier (yaw, pitch, fast-look boost).
+pdz_turn_speed_scale = 1.0
+# Vertical look speed only, multiplied on top of pdz_turn_speed_scale.
+pdz_pitch_speed_scale = 1.0
+# How quickly turning speeds up / slows down; higher = shorter fast-look ramp.
+pdz_turn_accel_scale = 1.0
+# Response exponent: 0 = game's own (1.5 PD style), 1 = linear.
+pdz_stick_curve = 0.0
+# Per-axis deadzone, fraction of stick travel: -1 = game's own (0.153).
+pdz_stick_deadzone = -1.0
+# The look code's second, cross-shaped deadzone: 1 = original, 0 = off.
+pdz_look_deadzone_scale = 1.0
+# Round deadzone + curve on the stick's overall deflection, so diagonals
+# turn as fast as straight pushes (original: per axis, ~35% slower at 45 deg).
+# Pair with pdz_look_deadzone_scale = 0.
+pdz_stick_radial = false
+# Look enhancement, on by default: zooming (left trigger) ends fast look, so
+# the turn drops to the zoomed speed at once instead of coasting past the
+# target for up to a second. The original glide is deliberate (Halo audit
+# H10). Works with both control schemes (Standard / Classic PD). false =
+# original. Needs pdz_look_tuning = true.
+pdz_fastlook_zoom_brake = true
+# Fast look ends below this stick deflection (it starts at 0.98).
+# 0.95 = original; 0.98 = easing off the rim brakes at once.
+pdz_fastlook_exit = 0.95
+# Diagnostic: "pdz_look:" lines in the log once a second.
+pdz_look_log = false
+
+# --- Auto-aim (defaults = original except pdz_aim_still_lock, which is on;
+# F10 compares against the original) ---
+# The game's auto-aim bends your shot onto a target whose centre is within
+# ~3.8 deg (Agent / Secret Agent; ~3 deg Perfect / Dark Agent) of your aim
+# (invisible: the crosshair stays put):
+# ~13 cm of the target at 2 m, ~66 cm at 10 m. It never turns the camera and
+# has no friction. F10 (bind_aim_ab) switches these off and on (A/B).
+pdz_autoaim_tuning = true
+# false = auto-aim off whatever the game's own Auto Aim option says.
+pdz_autoaim_enable = true
+# Lock radius and target-selection margin multiplier.
+pdz_autoaim_cone_scale = 1.0
+# Up close, lock radius covers at least this much of the target (cm).
+# Enhancement, e.g. 35; 0 = original (default).
+pdz_autoaim_min_radius_cm = 0.0
+# How far the shot bends to a locked target: 1 = all the way (original).
+pdz_autoaim_strength_scale = 1.0
+# Console-style slowdown while the crosshair is within the zone below of an
+# enemy (or on its body, if bigger), fading out by twice that (new; the game
+# has none). Enhancement, e.g. 0.35; 0 = off (default).
+pdz_aim_friction = 0.0
+# Sticky zone around a target's centre, degrees. Bigger helps distant targets.
+pdz_aim_friction_zone_deg = 3.0
+# How much of the friction applies while you turn toward the target (following
+# it up a ladder or across the screen). Default 0.9, a little less than when
+# overshooting; 0 = only slows overshoots; 1 = always.
+pdz_aim_friction_toward = 0.9
+# Close range: no friction on a target nearer than near_m, full from full_m
+# (fading in between), so you can turn fast enough on an enemy right next to
+# you. near_m = 0 = friction at every distance.
+pdz_aim_friction_near_m = 2.0
+pdz_aim_friction_full_m = 6.0
+# Sweep: friction eases off as the target moves across your view faster than
+# start_dps (deg/s, from your movement or theirs - circle strafing ~30) and is
+# gone by end_dps. Standing and aiming is ~0. end_dps = 1000 = never eases.
+pdz_aim_friction_sweep_start_dps = 10.0
+pdz_aim_friction_sweep_end_dps = 30.0
+# Auto-aim works the same on every difficulty (Agent / Secret Agent rules).
+# The original gives Perfect / Dark Agent a weaker auto-aim and turns it off
+# while zoomed. Enhancement; false = original (default).
+pdz_autoaim_ignore_difficulty = false
+# Bend shots while holding still or tracking slowly (the original only bends
+# them while you turn fast). In a Combat Arena A/B it raised hits from 35% to
+# 59%. On by default; false = original. Needs pdz_autoaim_tuning = true.
+pdz_aim_still_lock = true
+# When a shot is bent while your crosshair is already over the target, keep
+# your aim height and bend only sideways (a head aim hits the head; the game
+# bends to a fixed point on the body). On by request for testing; false =
+# original. Needs pdz_autoaim_tuning = true.
+pdz_aim_respect_headshots = true
+# Keep the game's rotational aim assist (sticky turn with a target) on while
+# zoomed; the original switches it off when you zoom. Enhancement, on by
+# request (2026-10-20); false = original.
+pdz_aim_assist_zoomed = true
+# Diagnostic: "pdz_aim:" lines (target distance, lock, target angular speed).
+pdz_autoaim_log = false
+# Diagnostic: combat aiming measurement (pdz_combat: lines, logs/combat_*.csv,
+# logs/combat_summary.txt). Needs log_level = "info".
+pdz_combat_log = false
+# Diagnostic: one "pdz_shot:" line per shot you fire (weapon, zoom, cover state,
+# shot origin, crosshair, auto-aim bend, spread, path to the target, what was
+# hit). Needs log_level = "info".
+pdz_shot_log = false
+# Diagnostic: "pdz_button:" lines for every press / release of A / B / X / Y,
+# the bumpers and the triggers, whether the game registered the press, and
+# why a reload (X) or fire mode switch (B) was refused. Needs log_level = "info".
+pdz_button_log = false
+# Diagnostic: "pdz_fx:" lines for the de-rez death effect (request, slot and
+# REZOUT sound, snapshot resolve, pixels the CPU found, particles). Needs
+# log_level = "info".
+pdz_fx_log = false
+# Diagnostic: "pdz_music:" lines (music type, interactive level, music cues).
+pdz_music_log = false
+
+# --- Multiplayer music (enhancement; the in-game value is Off by default) ---
+# Adds a MUSIC row under POINTS LIMIT on the multiplayer setup screens: Off /
+# Random / one of the game's own soundtrack pieces (38: the missions' music,
+# menus, credits), played over the map's ambience in multiplayer matches only.
+# Off (the default) = the original game, which plays only ambience. The
+# choice is kept per local profile (mp_music.txt next to its saves).
+# false = no Music row at all. Restart after changing it.
+pdz_mp_music = true
+
+# --- Ragdolls (enhancements, original by default; 1 / -1 / 0 = original) ---
+# Apply to characters created after the change (next level or respawn).
+# Divides limbs' resistance to spinning (it scales the inverse inertia the
+# game sets). The game gives every body part 10x its largest natural moment
+# on all axes, for stability (deliberate); 10 = the largest natural moment
+# (lighter, freer limbs), 0.5 = twice the game's (stiffer). 1 = original
+# (default).
+pdz_ragdoll_inertia_scale = 1.0
+# Angular damping: higher stops limbs swinging on and on. E.g. 0.4;
+# -1 = original (0.05, default).
+pdz_ragdoll_angular_damping = -1.0
+# Linear damping (original 0): leave at -1 - more makes falls floatier.
+pdz_ragdoll_linear_damping = -1.0
+# Longest blend from a death animation into the ragdoll, seconds. The game
+# uses 2.5x the animation's length (often 7-16 s), so bodies float down
+# half-animated and spin when shot. E.g. 1.5; 0 = original (default).
+pdz_ragdoll_death_blend_max = 0.0
+# Diagnostic: "pdz_ragdoll:" lines (animation/physics switches, blend state,
+# each body's computed and set inertia, and the pelvis' fall for a second
+# after each switch to ragdoll: a 1 m free fall takes ~0.45 s). Needs
+# log_level = "info".
+pdz_ragdoll_log = false
+
+# --- Cover ---
+# Diagnostic: "pdz_cover:" lines (cover found/lost, enter requested, state
+# changes with timestamps, exit) and "pdz_cover_ai:" lines for enemies (cover
+# tasks, peeks, failed cover tests, totals once a minute). Needs
+# log_level = "info".
+pdz_cover_log = false
+# Diagnostic: "pdz_ai:" lines once a second per enemy that is aware or within
+# 50 m: setup, flags (aware / hurt / shot-at / provoked / no-cover), alert,
+# target and distance, pads, tasks, and what its planner did (plans built,
+# cover pads tried / passed / re-check fails, plan ends, fallbacks). Needs
+# log_level = "info".
+pdz_ai_state_log = false
+
+# --- Game fixes (bugs in the original game, all on by default; false = original) ---
+# Master switch; F11 (bind_game_fixes_ab) flips it in game. Each fix below
+# only applies while this is on. See docs/BUG_AUDIT.md.
+pdz_game_fixes = true
+# Rare's title update fix (official, on by default): after leaving cover,
+# 1 s before the cover prompt can appear again.
+pdz_fix_tu_cover_cooldown = true
+# More of Rare's title update fixes (on by default; docs/BUG_AUDIT.md U-table):
+# null checks (Datacore script, multiplayer bot tasks, base table), LV10
+# entry 14 health, flag drop only from the carrier, teleport re-insert,
+# Facility / Ruin HUD markers and option / Random map rules.
+pdz_fix_tu_datacore_null = true
+pdz_fix_tu_bot_task_null = true
+pdz_fix_tu_base_slot_null = true
+pdz_fix_tu_lv10_health = true
+pdz_fix_tu_flag_drop = true
+pdz_fix_tu_teleport = true
+pdz_fix_tu_pack_markers = true
+pdz_fix_tu_pack_map_rules = true
+# Title update data (needs its 1726605008.pkg, installed by
+# tools/install_map_packs.py --update; the props are taken at boot, so
+# restart after changing these): Township textures and hit-fix prop,
+# Chinatown / Desert hit-fix props.
+pdz_fix_tu_township = true
+pdz_fix_tu_mp_hitfix = true
+# Standard controls below default horizontal sensitivity: zoomed / in-cover
+# stick curve blends toward the default, not the max setting.
+pdz_fix_halo_zoom_curve = true
+# Stance spread cap applied before the shot is aimed, not just after.
+pdz_fix_spread_cap_order = true
+# Zoomed shots bent by auto-aim land on the target (the original overshoots
+# by 1 / (1 - zoom): 5x with the P99's zoom).
+pdz_fix_autoaim_zoom_bend = true
+# CMP150: first shot heard as close as other guns' (minimum noise 500, like
+# its per-shot value, instead of 5000).
+pdz_fix_cmp_noise = true
+# Emulation fix: the death "de-rez" effect (body breaks into coloured cubes in
+# multiplayer / holo deaths) gets its snapshot of the body back from the GPU.
+pdz_fix_derez_snapshot = true
+# Enemy AI (docs/BUG_AUDIT.md AI10-AI23): semi-auto enemies keep the 30 fps
+# trigger rhythm at 60 fps; grenade check for targets 3 m+ above / below;
+# all four dodge facings; backwards dodges check behind; 85-90 degree path
+# corners slow instead of stopping; alert "calm" flag follows the count.
+pdz_fix_ai_semiauto_rhythm = true
+pdz_fix_ai_grenade_height = true
+pdz_fix_ai_dodge_facing = true
+pdz_fix_ai_dodge_clearance = true
+pdz_fix_ai_corner_speed = true
+pdz_fix_ai_calm_flag = true
+# AI35: enemies pick cover pads at least 10 m from you (the distance the game
+# re-checks), so they stop picking and dropping close pads.
+pdz_fix_ai_cover_min_distance = true
+
+# --- Controls fixes (only the sensitivity clamp; false = original) ---
+# Master switch; each fix below only applies while this is on. See
+# docs/BUG_AUDIT.md.
+pdz_controls_fixes = true
+# Sensitivity boosts can't push the turn curve past the max setting.
+pdz_fix_sensitivity_clamp = true
+# Off for good (Rare's PD-style look design, not bugs): fast look reading
+# the move stick, fast look's glide when slowing, the default fast-look ramp.
+pdz_fix_fastlook_stick = false
+pdz_fix_fastlook_decel = false
+pdz_fix_fastlook_accel_data = false
+# Dropped: the empty-hand spread case never happens in game.
+pdz_fix_spread_recovery_gate = false
+
+# --- Enemy cover fixes (on by default; false = original enemy cover AI) ---
+# Master switch; F5 (bind_ai_cover_ab) flips it in game. Each fix below only
+# applies while this is on.
+pdz_ai_cover_fixes = true
+# Start the 5 s / 6 s "can I still fight from here" timers when the enemy
+# reaches its cover point, not when it decides to go (long runs no longer end
+# in leaving cover on arrival).
+pdz_ai_cover_fix_grace = true
+# Give the alternate peek animations their intended 1-in-3 chance (the
+# original roll never succeeds).
+pdz_ai_cover_fix_peek_roll = true
+# Give up a cover point after 3 snap-backs in a row instead of re-aligning
+# forever without shooting.
+pdz_ai_cover_fix_snapback = true
+
+# --- Official content restoration ---
+# The official map packs (Trench, Rooftops, Plaza, GasPlant; Facility, Ruin)
+# in the multiplayer map list, with their pictures, using what Title Update 3
+# adds for them. Needs the packs installed (tools/install_map_packs.py,
+# docs/MAP_PACKS.md); without them the game shows the original maps. Restart
+# after changing it. Off = the launch game unchanged.
+pdz_dlc_maps = true
+# Diagnostic: "pdz_dlc:" lines (mounts, maps added, packages, strings, cue
+# lists, files taken from a pack). Needs log_level = "info".
+pdz_dlc_log = false
+
+# Xbox locale language:
+#  1 = English      2 = Japanese     3 = German      4 = French
+#  5 = Spanish      6 = Italian      7 = Korean      8 = Traditional Chinese
+#  9 = Portuguese  10 = Simplified Chinese  11 = Polish  12 = Russian
+##
+# Languages without implementation in your legal disk will fall back to English.
+##
+user_language = 1
+
+# --- Release choices (2026-11-04) ---
+# Frame timing is off (the test tools turn it on per run); cutscenes keep Rare's look (smoothing parked, not offered).
+pdz_frame_timing = false
+pdz_cutscene_smooth = false
+# Networking (system link / LAN) off: every socket binds to 127.0.0.1, so Windows asks no firewall question on first
+# start. The settings window's Advanced tab turns it on.
+net_lan = false
+
+# --- Multiplayer: Rare's cut modes (the developer's play set) ---
+# Plant the Flag and Protection in the scenario list; bots in Protection (hackers, hand-over) and in Sabotage, with
+# the Sabotage play stages. Duel / Team Duel stay off (parked).
+pdz_mp_cut_scenarios = true
+pdz_mp_cut_scenarios_duel = false
+pdz_protection_bots = true
+pdz_sabotage_bots = true
+pdz_bot_turrets = true
+pdz_sabotage_objective_focus = true
+pdz_sabotage_people_stage1 = true
+pdz_sabotage_people_stage2 = true
+pdz_bot_count_default = true
+pdz_sabotage_nav_fix = false
+pdz_sabotage_desert_dump_wall_removed = false
+pdz_sabotage_desert_nav = true
+pdz_sabotage_play_no_idle = true
+pdz_sabotage_play_snap = true
+pdz_sabotage_play_quiet_melee = true
+pdz_sabotage_play_weapons = true
+pdz_sabotage_play_shop = true
+pdz_sabotage_play_team = true
+pdz_sabotage_play_squads = true
+pdz_ptf_objective_focus = true
+pdz_protection_objective_focus = true
+# Infection above 16 players offline (up to 32).
+pdz_infection_32 = true
+# Fix: Rare's recorded multiplayer announcer lines that their code never plays.
+pdz_mp_announcer_extras = true
+
+# --- Settings window (PDZ Restored Settings) ---
+# The window writes the lines below and nothing else; edit them here or there.
+# VSync / VRR: "fixed" = On (locked to the screen's refresh, the default), "vrr" = VRR (G-Sync / FreeSync: only if
+# it is switched on in your graphics driver for this display). VSync Off is vsync = false.
+pdz_present_pacing = "fixed"
