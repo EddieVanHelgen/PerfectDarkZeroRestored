@@ -1,15 +1,18 @@
 # Perfect Dark Zero Restored
 
-Perfect Dark Zero Restored (PDZ Restored) is a native PC version of Rare's Xbox 360 game Perfect Dark Zero.
+Perfect Dark Zero Restored (PDZ Restored) is a native PC version of Rare's Xbox 360 launch game Perfect Dark Zero.
 
-As well as the PC version itself, it restores two multiplayer modes Rare left unfinished, Plant the Flag and Protection,
-gets bots playing Sabotage, and allows matches with up to 31 bots.
+As well as bringing the game to PC, it restores two multiplayer modes Rare left unfinished, Plant the Flag and Protection, adds bots to Sabotage mode, and allows matches with up to 31 bots.
 
-The game's own code, as updated by Title Update 3, has been recompiled into a Windows program. A native Direct3D 12
-renderer draws the graphics. There is no emulator.
+The game's own code, including Title Update 3, has been recompiled into a Windows program, and a native Direct3D 12
+renderer draws the graphics. The game runs as native code, not in an emulator.
 
 It is built on [nikolaygorb's PerfectDarkZeroRecomp](https://github.com/nikolaygorb/PerfectDarkZeroRecomp) and the
 [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
+
+**This project contains no game files.** You need your own copy of the game.
+
+AI was used to help with the game's code and settings window.
 
 <div align="center">
   <img src="docs/settings_window/settings_display_100pc.png" alt="The PDZ Restored settings window, Display tab" width="640">
@@ -20,6 +23,32 @@ It is built on [nikolaygorb's PerfectDarkZeroRecomp](https://github.com/nikolayg
 Get the latest version from the
 [Releases page](https://github.com/EddieVanHelgen/PerfectDarkZeroRestored/releases). Unzip it into its own folder
 and read the `README.md` inside.
+
+## What this project is about
+
+PDZ Restored focuses on restoring Rare's original game rather than modernising it: finishing what Rare left unfinished, fixing its bugs and making it run well on PC.
+
+Other projects take the game in different directions, and they're all well worth a look:
+- [PerfectDarkZeroRecomp](https://github.com/nikolaygorb/PerfectDarkZeroRecomp) by nikolaygorb, the recompilation this project is built on, with its own enhancements such as a third-person camera.
+- [Perfect Dark Zero: Reinstated](https://github.com/2023PerfectDark/Perfect-Dark-Zero-Reinstated) by 2023PerfectDark, which adds new content and options of its own.
+- [Perfect Dark Zero Reworked](https://github.com/zerocoregithub/PerfectDarkZeroReworked) by zerocore, with controller, gyro, aiming and presentation enhancements.
+
+## Features
+
+- **Two cut multiplayer modes restored.** Rare left Plant the Flag and Protection modes unfinished. Both are now
+  finished and playable, with bots.
+- **Bots in Sabotage.** Sabotage on Xbox 360 shipped without bot support. After 85 commits and 70+ test runs, the bots can finally play the mode properly.
+- **Up to 31 bots** in a match, and 32-player Infection. Bots can use turrets. Facility and Ruin stay 8-player maps,
+  per Rare's original settings.
+- Both official map packs can be imported from your own console. A known fault in some copies of Map Pack One is repaired when you install it.
+- A native Direct3D 12 renderer that matches the Xbox 360 graphics, up to 4K, with higher frame rates and much lower GPU use than emulated rendering.
+- Up to 120 fps in the campaign, if your PC and screen support it. Multiplayer is locked at 60 fps.
+- Built on Title Update 3, with all of Rare's tweaks and bug fixes.
+- Dozens of additional bug fixes, including aiming, weapons, enemy AI, cover, missing speech and sounds, and menus.
+- A music selector for multiplayer matches, and an option to play your own MP3s.
+- A settings window with display, frame rate, map pack and control options, including a field of view slider.
+- Safe mode - just in case.
+- This release was primarily designed and tested using a controller. Mouse and Keyboard are supported and fully remappable.
 
 ## What you need
 
@@ -40,25 +69,6 @@ No game files are included, and none can be downloaded through PDZ Restored.
 2. Put your disc image (or the extracted disc) and the Title Update 3 file into the `game` folder.
 3. Start `PDZRestored.exe`. The first start checks your files and prepares them. This takes about 20 seconds.
 4. The settings window opens. Add your map packs on the Map packs tab if you have them, then press Play.
-
-## Features
-
-- **Two cut multiplayer modes restored.** Rare left Plant the Flag and Protection unfinished. Both are now
-  finished and playable, with bots.
-- **Bots in Sabotage.** Sabotage shipped without bot support. Now bots play it too.
-- **Up to 31 bots** in a match, and 32-player Infection. Bots can use turrets. Facility and Ruin stay 8-player maps,
-  as Rare made them.
-- Both official map packs, from your own copies. A known fault in some copies of Map Pack One is repaired when you
-  install it.
-- A native Direct3D 12 renderer that matches the Xbox 360 picture, up to 4K.
-- 120 fps in the campaign, if your PC and screen can manage it. Multiplayer runs at 60 fps.
-- Built on Title Update 3, with all of Rare's fixes.
-- Dozens of bug fixes, including aiming, weapons, enemy AI, cover, missing speech and sounds, and menus.
-  Cutscenes stay in sync with their sound.
-- A music choice for multiplayer matches, which can also play your own MP3s.
-- A settings window with display, frame rate, map pack and control options, including a field of view slider.
-- Safe mode, for when something goes wrong.
-- Designed for a controller. Mouse and keyboard work too, and every key, mouse button and the wheel can be rebound.
 
 ## Status
 
