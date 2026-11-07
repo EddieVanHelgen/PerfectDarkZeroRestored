@@ -56,6 +56,10 @@ namespace pdz::native
 {
   void RegisterMarkBind(); // mod/render/native/native_present.cpp: bind_mark_spot (F12), the mark-this-spot test aid
 }
+namespace pdz::transwater
+{
+  void Init(rex::ui::ImGuiDrawer *drawer); // mod/transparency_water.cpp: F1 and its label
+}
 
 #ifdef PDZ_PGO_GEN
 namespace pdz::pgo
@@ -191,6 +195,7 @@ public:
     // tu3-base: the TU3 build's only binds (live_toggles isn't ported).
     anim_viewer::Init(drawer);
     restorations::RegisterBinds(); // testing tool: pdz_test_lab_blackout_key
+    pdz::transwater::Init(drawer); // F1: pdz_fix_transparency_water on / off, and its label
 #endif
     // Mouse aim straight into the view angles, menu mode for mnk (src/mod/mouse_look.h).
     pdz::mouse::MouseLook::Get().Attach(window(), drawer);

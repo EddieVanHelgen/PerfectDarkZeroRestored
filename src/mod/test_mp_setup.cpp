@@ -14,7 +14,7 @@
 //   max players 16 -> 32 applies) right after the setup loads (sub_823BD140) and again just before the match
 //   start's pass over the options (sub_82432678, from cut_scenarios.cpp's hook). Option ids (TU3 name table, index
 //   - 3): 1 LEVEL (a map position, sub_823BB108 of the level name), 2 POINTS_LIMIT, 3 TIME_LIMIT, 5 PLAYERS_MAX,
-//   19 BOT_COUNT, 61 MODE, 62 SCENARIO, 63 DARKOPS_SCENARIO, 77 BOT_MAXCOUNT. The bot count setter clamps to max
+//   19 BOT_COUNT, 20 bot difficulty (key "skill"), 61 MODE, 62 SCENARIO, 63 DARKOPS_SCENARIO, 77 BOT_MAXCOUNT. The bot count setter clamps to max
 //   players - humans and the bot limit, so max players (5) and the bot limit (77) are raised first when needed. The
 //   mode itself is never changed (the script picks DEATHMATCH / DARK OPS): a scenario of the other mode is skipped
 //   with a warning.
@@ -181,7 +181,7 @@ namespace
   {
     std::string text; // the cvar value this was parsed from
     bool active = false;
-    int32_t bots = -1, points = -1, time = -1, teams = -1;
+    int32_t bots = -1, points = -1, time = -1, teams = -1, skill = -1;
     const Level *level = nullptr; // map by name
     int32_t level_position = -1;  // map by number (a LEVEL position)
     const Scenario *scenario = nullptr;
@@ -240,6 +240,10 @@ namespace
       {
         w.teams = ParseInt(value, ok); // DARKVALUE_TEAM_COUNT (option 4)
       }
+      else if (key == "skill")
+      {
+        w.skill = ParseInt(value, ok); // bot difficulty (option 20, as cut_scenarios.cpp's 'bot difficulty' line)
+      }
       else if (key == "map")
       {
         for (const Level &l : kLevels)
@@ -270,17 +274,17 @@ namespace
       if (!ok)
       {
         REXLOG_ERROR("pdz_test_mp: pdz_test_mp_setup item '{}' not understood (keys: bots, points, time, map, "
-                     "scenario, teams; e.g. bots=31,points=15,time=10,map=urban,scenario=dm)",
+                     "scenario, teams, skill; e.g. bots=31,points=15,time=10,map=urban,scenario=dm)",
                      item);
       }
     }
     if (w.active)
     {
       REXLOG_INFO("pdz_test_mp: pdz_test_mp_setup '{}': the saved setup is ignored (Rare's presets); bots {}, points "
-                  "{}, time {}, map {}, scenario {}",
+                  "{}, time {}, map {}, scenario {}, bot difficulty {}",
                   text, w.bots, w.points, w.time,
                   w.level ? w.level->menu : w.level_position >= 0 ? fmt::format("position {}", w.level_position) : "-",
-                  w.scenario ? w.scenario->key : "-");
+                  w.scenario ? w.scenario->key : "-", w.skill);
     }
     g_wanted = w;
     return w;
@@ -374,6 +378,10 @@ namespace
     if (w.teams >= 0)
     {
       set(4, "teams", w.teams);
+    }
+    if (w.skill >= 0)
+    {
+      set(20, "bot difficulty", w.skill);
     }
     t_applying = false;
     if (!changes.empty() || !refused.empty())

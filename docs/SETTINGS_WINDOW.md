@@ -11,13 +11,13 @@ A standard Windows window: native controls with the system's look (comctl32 v6 a
 - when Shift is held at launch;
 - with `--pdz_settings_open` (`PDZ Restored Settings.bat`).
 
-Never in a developer's build or with `pdz_setup_quiet`. The close box quits; Play and Safe mode save and start.
+Never in a developer's build or with `pdz_setup_quiet`. Play and Safe mode save and start. The close box (or Alt+F4) saves the same way and quits without starting the game (0.9.2).
 
 **Tabs:**
 
 | Tab | Settings | Writes |
 |---|---|---|
-| Display | Monitor, Borderless / Fullscreen, Resolution (Fullscreen only; Desktop by default), Render scale 100 / 75 / 50 %, VSync / VRR On / VRR (G-Sync / FreeSync) / Off (each with its own help line; Off warns: tearing and judder), Field of view 73-103 degrees across 16:9 with Default (Rare's) | `monitor`, `fullscreen`, `fullscreen_exclusive`, `resolution` (Fullscreen with a chosen size only), `pdz_native_scale` (75 / 50 % of the desktop's auto scale, nearest integer; 100 % = no line), `pdz_present_pacing` (fixed / vrr; a hand-set present / latch is kept by On), `vsync`, `pdz_fov_scale` |
+| Display | Monitor, Borderless / Fullscreen, Resolution (Fullscreen only; Desktop by default), Render scale 100 / 75 / 50 %, VSync / VRR On / VRR (G-Sync / FreeSync) / Off (each with its own help line; Off warns: tearing and judder), Field of view 73-103 degrees across 16:9 with Default (Rare's) | `monitor`, `fullscreen`, `fullscreen_exclusive`, `resolution` (Fullscreen with a chosen size only), `pdz_native_scale` (75 / 50 % of the desktop's auto scale, nearest integer, 50 % one lower where both would be the same; 100 % = no line, and a value the file had is dropped at once; the saved value is shown again when the window reopens, 0.9.2), `pdz_present_pacing` (fixed / vrr; a hand-set present / latch is kept by On), `vsync` (read from the settings file: the GPU plugin that owns it isn't loaded when the window opens, 0.9.2), `pdz_fov_scale` |
 | Frame rate | Campaign Auto / 120 / 60 (Auto: what this screen gets, in a line); Multiplayer 60, greyed out | `pdz_sp_120` |
 | Map packs | each pack, its maps and status; Add / Remove; Add pack files...; Check installed packs | the packs (below) |
 | Controls | mouse sensitivity, invert, Step zoom (off), one row per action with two keys each (rebind by pressing), Reset controls to defaults | `pdz_mouse_sensitivity`, `pdz_mouse_invert`, `pdz_zoom_steps` (only when changed) and the changed `keybind_*` lines in `mapping.toml` (comments kept) |

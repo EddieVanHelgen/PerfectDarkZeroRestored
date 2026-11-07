@@ -775,6 +775,12 @@ namespace
 
   float Distance(const uint8_t *base, uint32_t a, uint32_t b)
   {
+    // Overnight 092 (Sabotage on Tower, two crashes, guest read of 0x30): DefenceTick's log line measured to a
+    // defender's home 0 (no piece found). A missing object is "very far" (1 km) instead of a crash.
+    if (!IsGuestPointer(a) || !IsGuestPointer(b))
+    {
+      return 100000.0f;
+    }
     float d2 = 0.0f;
     for (uint32_t i = 0; i < 3; ++i)
     {
@@ -5049,6 +5055,7 @@ uint32_t PdzDuelGatePad(uint32_t character); // the Duel bracket (end of file)
 uint32_t PdzSabotageGuardPad(PPCContext &ctx, uint8_t *base, uint32_t character);
 uint32_t PdzSabotageStancePad(const uint8_t *base, uint32_t character);
 uint32_t PdzSabotageAreaPad(const uint8_t *base, uint32_t character);
+uint32_t PdzProtectionSpreadPad(uint32_t character, uint32_t terminal);
 
 REX_HOOK_RAW(sub_8241D690)
 {
@@ -5075,6 +5082,12 @@ REX_HOOK_RAW(sub_8241D690)
     // pdz_protection_objective_focus: a patrol bot guards the live terminal.
     if (g_terminal_patrol.count(t_planning) && IsGuestPointer(g_patrol_terminal))
     {
+      // pdz_protection_spread: his own pad of the ring / outer ring.
+      if (const uint32_t own = PdzProtectionSpreadPad(t_planning, g_patrol_terminal))
+      {
+        ctx.r3.u64 = own;
+        return;
+      }
       uint32_t sealed = 0;
       const uint32_t pad = RareOpenPadNear(ctx, base, g_patrol_terminal + kPosition, Log() ? &sealed : nullptr);
       if (Log())
@@ -9801,6 +9814,202 @@ namespace
     job.held_frames = job.pressed_frames = 0;
   }
 
+  // Reload watch (diagnostic, pdz_scenario_log; 0.9.2, release log 002: a
+  // bot "locked in a reload loop" at a Subway fuel dump). Every bot's hand
+  // gun, every controller frame, whoever drives him (our jobs or Rare's
+  // fights): a reload = the gun entering its reload animation (fire state
+  // 10) or its clip rising (a refill, ours or Rare's), at most one per 0.75 s
+  // (at a spot the gun can flip 1 <-> 10 every frame, log 138); a shot = the
+  // clip dropping. More than 3 reloads in a row without a shot = a RELOAD
+  // LOOP line (again every 4 more), and the streak's end when he fires.
+  struct ReloadWatch
+  {
+    uint32_t gun = 0;
+    uint32_t clip = 0;
+    int state = -1;
+    int streak = 0;
+    double first = 0.0, last = 0.0; // s (steady clock) of the streak's first / last reload
+    int logged = 0;                 // the streak length last logged
+    std::string trail;              // the last fire-state changes: "state@s since the previous change" (diagnostic)
+    double changed = 0.0;           // s (steady clock) of the last change
+    float pos[3] = {};              // position at pos_t (speed, every 0.5 s)
+    double pos_t = 0.0;
+    float speed = 0.0f;             // cm/s over the last 0.5 s
+    // The reload guard (pdz_sabotage_play_weapons): the current reload episode (fire states 10 / 14 / 18 with
+    // nothing in between but those), the last remedy and how far it has gone (0: none since his last shot).
+    bool in_episode = false;
+    double episode_start = 0.0;
+    double remedy_at = -100.0;
+    int remedy_level = 0;
+    int remedy_streak = 0;          // the streak at the last remedy (one remedy per new reload)
+    // Reload animations since his last shot (entering state 10 / 18, at most one per 0.75 s): the guard's count.
+    // The watch's reloads also count a reload asked for and dropped (1 -> 14 -> 1, no animation, common in Rare's
+    // fights) and refills; overnight 092's first guard runs stepped in for those too (Rare's fights, 2 of 3 steps).
+    int anims = 0;
+    double anim_last = -100.0;
+    double anim_first = -100.0;     // s (steady clock) of the first of them
+    int remedy_anims = 0;
+  };
+  std::unordered_map<uint32_t, ReloadWatch> g_reload_watch;
+  int g_reload_loops = 0;         // RELOAD LOOP streaks this match (lines with "#n")
+  int g_reload_guard[4] = {};     // remedies this round: refill + raise, another gun, the attacker's fallback, none possible
+  bool ReloadGuardOn(const uint8_t *base);
+  void ReloadGuardAct(PPCContext &ctx, uint8_t *base, uint32_t bot, uint32_t gun, ReloadWatch &w, const char *why);
+  // What our Sabotage attacker job has him do (empty: no job, Rare's AI).
+  std::string ReloadLoopJob(const uint8_t *base, uint32_t bot)
+  {
+    const auto a = g_sabotage_attackers.find(bot);
+    if (a == g_sabotage_attackers.end())
+    {
+      return "; no attacker job (Rare's AI)";
+    }
+    const SabotageAttacker &job = a->second;
+    return fmt::format("; attacker job: '{}' at piece {:08X} ({:.1f} m), reload wanted {}, presses {}, refilled {}, melee {}",
+                       job.state, job.prop, job.prop ? Distance(base, bot, job.prop) / 100.0f : 0.0f, job.reload,
+                       job.reload_attempt, job.reload_forced, job.melee);
+  }
+
+  double WatchClock()
+  {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+  }
+
+  bool ReloadState(int state)
+  {
+    return state == 10 || state == 14 || state == 18; // reloading, a reload waiting to start, the secondary's reload
+  }
+
+  void ReloadWatchFrame(PPCContext &ctx, uint8_t *base, uint32_t bot)
+  {
+    const bool guard = ReloadGuardOn(base);
+    if ((!Log() && !guard) || !IsBot(base, bot))
+    {
+      return;
+    }
+    const uint32_t hand0 = Load32(base, bot + kHand0), hand1 = Load32(base, bot + kHand1);
+    const uint32_t gun = IsWeapon(base, hand1) ? hand1 : IsWeapon(base, hand0) ? hand0 : 0;
+    if (!gun)
+    {
+      return;
+    }
+    ReloadWatch &w = g_reload_watch[bot];
+    const uint32_t clip = Clip(base, gun);
+    const int state = FireState(base, gun);
+    const double now = WatchClock();
+    if (gun != w.gun)
+    {
+      w.gun = gun;
+      w.clip = clip;
+      w.state = state;
+      w.in_episode = false;
+      return; // another gun: no shot / reload read across the swap (the streak goes on)
+    }
+    if (Log() && now - w.pos_t >= 0.5)
+    {
+      float d2 = 0.0f;
+      for (int i = 0; i < 3; ++i)
+      {
+        const float v = LoadFloat(base, bot + kPosition + 4 * i);
+        d2 += (v - w.pos[i]) * (v - w.pos[i]);
+        w.pos[i] = v;
+      }
+      w.speed = w.pos_t > 0.0 ? float(std::sqrt(d2) / (now - w.pos_t)) : 0.0f;
+      w.pos_t = now;
+    }
+    if (Log() && state != w.state)
+    {
+      w.trail += fmt::format(" {}@{:.2f}{}", state, now - w.changed, clip != w.clip ? fmt::format("(clip {})", clip) : "");
+      if (w.trail.size() > 360)
+      {
+        w.trail.erase(0, w.trail.find(' ', w.trail.size() - 300));
+      }
+      w.changed = now;
+    }
+    // A reload episode: from the first reload state to the first other state (a shotgun's shells load inside one).
+    if (ReloadState(state))
+    {
+      if (!w.in_episode)
+      {
+        w.in_episode = true;
+        w.episode_start = now;
+      }
+    }
+    else
+    {
+      w.in_episode = false;
+    }
+    if (clip < w.clip)
+    {
+      if (w.streak > 3 && Log())
+      {
+        REXLOG_INFO("pdz_scenario: reload watch: {:08X} ({}) fires again after a reload loop: {} reloads in {:.1f} s ({})",
+                    bot, BotName(base, bot), w.streak, w.last - w.first, GunText(base, gun));
+      }
+      if (w.remedy_level > 0 && Log())
+      {
+        REXLOG_INFO("pdz_scenario: reload guard: {:08X} ({}) fires again {:.1f} s after the guard's step {} ({})", bot,
+                    BotName(base, bot), now - w.remedy_at, w.remedy_level, GunText(base, gun));
+      }
+      w.streak = 0;
+      w.logged = 0;
+      w.remedy_level = 0;
+      w.remedy_streak = 0;
+      w.anims = 0;
+      w.remedy_anims = 0;
+      w.anim_first = -100.0;
+    }
+    // A reload: the gun entering a reload (from any state but another reload state), or its clip rising outside
+    // one (a refill: Rare's AI or ours); at most one per 0.75 s (the gun can flip 1 <-> 10 every frame, log 138).
+    else if (((ReloadState(state) && !ReloadState(w.state)) || (clip > w.clip && !ReloadState(state))) &&
+             now - w.last >= 0.75)
+    {
+      if (w.streak == 0)
+      {
+        w.first = now;
+      }
+      ++w.streak;
+      w.last = now;
+      if (Log() && w.streak > 3 && (w.logged == 0 || w.streak >= w.logged + 4))
+      {
+        if (w.logged == 0)
+        {
+          ++g_reload_loops;
+        }
+        w.logged = w.streak;
+        REXLOG_INFO("pdz_scenario: reload watch: RELOAD LOOP #{}: {:08X} ({}) {} reloads in a row without a shot over {:.1f} s: "
+                    "{}, clip {}, reserve {}, fire state {}{}; speed {:.0f} cm/s; last state changes:{}",
+                    g_reload_loops, bot, BotName(base, bot), w.streak, now - w.first, GunText(base, gun), clip,
+                    Reserve(base, gun), state, ReloadLoopJob(base, bot), w.speed, w.trail);
+      }
+    }
+    if ((state == 10 || state == 18) && w.state != 10 && w.state != 18 && now - w.anim_last >= 0.75)
+    {
+      if (w.anims == 0)
+      {
+        w.anim_first = now;
+      }
+      ++w.anims;
+      w.anim_last = now;
+    }
+    w.clip = clip;
+    w.state = state;
+    // The guard: a reload that hasn't finished in 2 s (Rare's take about 1.5 s, log 138), or a second reload
+    // animation without a shot within 4 s of the first (a reload ends in a shot or a ready gun, not another reload),
+    // or a third at any pace. One step per new reload animation (or per 2 s of one that never ends), at least
+    // 1.5 s apart. (Overnight 092: at 3 s / the third animation, locks of 2-3 s were left.)
+    if (guard && now - w.remedy_at >= 1.5)
+    {
+      const bool long_one = w.in_episode && now - w.episode_start >= 2.0;
+      const bool again = w.anims > w.remedy_anims && (w.anims >= 3 || (w.anims >= 2 && now - w.anim_first <= 4.0));
+      if (long_one || again)
+      {
+        ReloadGuardAct(ctx, base, bot, gun, w,
+                       long_one ? "a reload not finished in 2 s" : "reload animations in a row without a shot");
+      }
+    }
+  }
+
   // Per-frame diagnostic (log 137: the character's +484(14), 8252E9D0, is a
   // controller press and reloaded nothing, 809 times): what the hand gun and
   // the controller do, frame by frame, including when Rare's own combat
@@ -9920,6 +10129,127 @@ namespace
     {
       job.melee = true;
       job.melee_since = -1.0;
+    }
+  }
+
+  // The reload guard (0.9.2; release log 002, a bot "locked in a reload loop" at a Subway fuel dump; reproduced in
+  // overnight 092's runs: guns cycling 10 -> 14 -> 10 for 10-45 s, with an empty clip and with a full one). On with
+  // pdz_sabotage_play_weapons in Sabotage, for every bot (our jobs and Rare's fights). Steps, one per trigger,
+  // going further while he hasn't fired since the last one (15 s window):
+  // 1. the clip refilled the way Rare's AI does (when empty, with a reserve), then Rare's instant raise (gun +492,
+  //    r4 8: the reload ends, the gun is ready);
+  // 2. another gun he carries with ammo, not a thrown one (Rare's switcher; for our attacker the bad-gun list, as
+  //    BadGun does);
+  // 3. our attacker's own fallback (BadGun: melee at a soft piece, another spot at a hard one); for Rare's fights
+  //    nothing more (logged).
+  void StoreReserve(uint8_t *base, uint32_t gun, uint32_t reserve); // below
+
+  bool ReloadGuardOn(const uint8_t *base)
+  {
+    return REXCVAR_GET(pdz_sabotage_reload_guard) && REXCVAR_GET(pdz_sabotage_play_weapons) && SabotageBotsOn(base);
+  }
+
+  void ReloadGuardAct(PPCContext &ctx, uint8_t *base, uint32_t bot, uint32_t gun, ReloadWatch &w, const char *why)
+  {
+    const double now = WatchClock();
+    if (now - w.remedy_at > 15.0)
+    {
+      w.remedy_level = 0;
+    }
+    w.remedy_at = now;
+    w.remedy_streak = w.streak;
+    w.remedy_anims = w.anims;
+    w.in_episode = false;
+    ++w.remedy_level;
+    const auto a = g_sabotage_attackers.find(bot);
+    SabotageAttacker *job = a != g_sabotage_attackers.end() ? &a->second : nullptr;
+    uint32_t other = 0;
+    if (w.remedy_level >= 2)
+    {
+      for (uint32_t item : InventoryItems(base, bot))
+      {
+        // A gun he can fire: not a thrown one (grenade 33, Multimine 34: overnight 092's check run switched to a
+        // grenade) and not the combat shield.
+        const uint32_t type = IsWeapon(base, item) ? GunTypeOf(base, item) : 0;
+        if (item != gun && IsGun(base, item) && type != 33 && type != 34 && !g_bad_guns.count(item) &&
+            (Clip(base, item) > 0 || Reserve(base, item) > 0))
+        {
+          other = item;
+          break;
+        }
+      }
+    }
+    std::string did;
+    int step = 0;
+    if (w.remedy_level == 1 || (w.remedy_level == 2 && !other && !job))
+    {
+      step = 0;
+      const uint32_t clip = Clip(base, gun), reserve = Reserve(base, gun);
+      if (clip == 0 && reserve > 0)
+      {
+        const uint32_t params = Load32(base, gun + 860);
+        const uint32_t size = IsGuestPointer(params) ? ((uint32_t(base[params + 154]) << 8) | base[params + 155]) : 0;
+        const uint32_t load = std::min(size, reserve);
+        if (load)
+        {
+          base[gun + 1316] = uint8_t(load >> 8);
+          base[gun + 1317] = uint8_t(load);
+          StoreReserve(base, gun, reserve - load);
+          did = fmt::format("clip refilled Rare's AI way ({} of {}, reserve {} -> {}), ", load, size, reserve, reserve - load);
+        }
+      }
+      if (PPCFunc *raise = pdz::GuestFunction(Load32(base, Load32(base, gun) + 492)))
+      {
+        rex::CallFrame frame(ctx);
+        frame.ctx.r1.u64 = (ctx.r1.u32 - 0x800) & ~0xFu;
+        frame.ctx.r3.u64 = gun;
+        frame.ctx.r4.u64 = 8; // Rare's instant raise (8253FAE4)
+        raise(frame.ctx, base);
+      }
+      did += fmt::format("instant raise (fire state now {})", FireState(base, gun));
+      if (job)
+      {
+        job->reload = false;
+        job->reload_press = 0;
+        job->reload_sent = -1.0;
+        job->reload_first = -1.0;
+        job->reload_forced = false;
+        job->reload_attempt = 0;
+        job->last_shot = job->clock;
+      }
+    }
+    else if (other)
+    {
+      step = 1;
+      SelectItem(ctx, base, bot, other);
+      if (job)
+      {
+        g_bad_guns.insert(gun);
+        job->switch_to = other;
+        job->switch_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+        job->gun_switch_next = job->clock + 5.0;
+        StopFire(*job);
+        job->aiming = 0.0;
+      }
+      did = fmt::format("switches to {} (clip {}, reserve {})", GunText(base, other), Clip(base, other), Reserve(base, other));
+    }
+    else if (job)
+    {
+      step = 2;
+      BadGun(ctx, base, bot, *job, gun, "reload loop (reload guard)");
+      did = job->melee ? "his attacker job's melee fallback" : "his attacker job's fallback (another spot)";
+    }
+    else
+    {
+      step = 3;
+      w.remedy_level = 0; // Rare's fight: the raise again next time
+      did = "no other gun with ammo: nothing more (Rare's fight)";
+    }
+    ++g_reload_guard[step];
+    if (Log())
+    {
+      REXLOG_INFO("pdz_scenario: reload guard: {:08X} ({}) step {}: {}: {}; gun {}{}", bot, BotName(base, bot),
+                  w.remedy_level, why, did, GunText(base, gun), ReloadLoopJob(base, bot));
     }
   }
 
@@ -16444,6 +16774,15 @@ REX_HOOK_RAW(sub_82429B48)
   g_rare_unroutable.clear();
   g_rare_fail_bots.clear();
   g_round_counts = {};
+  if (Log())
+  {
+    REXLOG_INFO("pdz_scenario: Sabotage round over: reload watch: {} reload loop(s) this round; reload guard: refill + "
+                "raise {}, another gun {}, attacker fallback {}, nothing possible {}",
+                g_reload_loops, g_reload_guard[0], g_reload_guard[1], g_reload_guard[2], g_reload_guard[3]);
+  }
+  g_reload_loops = 0;
+  std::fill(std::begin(g_reload_guard), std::end(g_reload_guard), 0);
+  g_reload_watch.clear();
 }
 
 namespace
@@ -23180,6 +23519,7 @@ REX_HOOK_RAW(sub_82273B50)
   {
     GunFrameDiag(base, ctx.r3.u32 - 6284);
   }
+  ReloadWatchFrame(ctx, base, ctx.r3.u32 - 6284);
 }
 
 // sub_824F8F80 [switcher, f1 dt]: the weapon switcher's per-frame step; it
@@ -24006,6 +24346,276 @@ namespace
                 Distance(base, bot, hacker) / 100.0f);
   }
 
+  // pdz_protection_spread (0.9.2; release log 001, Temple, 31 bots: most bots bunched in one open area for a while).
+  // With the objective focus every patroller of BOTH teams asked Rare's goal 7 for the same pad, the open pad
+  // nearest the live terminal, and with the fair hunt the escorts and hunters who don't perceive the enemy hacker
+  // patrol too: 10+ bots of a team on one spot. With this switch (needs pdz_protection_objective_focus), per team:
+  // - at most 3 escorts with the hacker, 4 hunters on the enemy hacker, 4 patrollers at the live terminal;
+  // - the patrollers on their own pads of a ring 9 m round the terminal (each team on its own sectors, 4 m apart);
+  // - every other helper (the "spare" ones) on his own pad of an outer ring 18-34 m out, on the approaches, a new
+  //   one every 40 s (they roam the ways in rather than stand in one crowd); with no live terminal Rare's roam;
+  // - each pick logged (`Protection spread: ...`). As the Sabotage node-last push's guard ring (2026-11-03).
+  constexpr size_t kSpreadEscorts = 3, kSpreadHunters = 4, kSpreadPatrol = 4;
+  constexpr float kSpreadRing = 900.0f;                        // cm: the patrol ring's radius
+  constexpr float kSpreadOuter[] = {1800.0f, 2600.0f, 3400.0f}; // cm: the outer ring's radii, by slot
+  constexpr double kSpreadRotate = 40.0;                       // s: an outer pad's life
+  struct SpreadPick
+  {
+    uint32_t pad = 0;
+    uint32_t terminal = 0;
+    int slot = -1;
+    bool outer = false;
+    double epoch = -1.0; // the rotation epoch it was picked in (outer pads)
+    double retry_at = 0.0; // none found: the next search (overnight 092's first run searched every tick)
+    bool none_logged = false;
+  };
+  std::unordered_map<uint32_t, SpreadPick> g_prot_spread;   // bot -> his own goal-7 pad
+  uint32_t g_spread_scratch = 0;                       // guest scratch: a vec3 for Rare's pad search
+  int g_spread_counts[3] = {};                         // picks this match: ring, outer, none found
+
+  bool SpreadOn()
+  {
+    return REXCVAR_GET(pdz_protection_spread) && REXCVAR_GET(pdz_protection_objective_focus);
+  }
+
+  double SpreadClock()
+  {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+  }
+
+  // A pad on a ring round the terminal: 16 directions (team 0 the even ones first, team 1 the odd), the first open
+  // pad (Rare's search, reachable ones) near the ring point, 1-2.2 x the radius from the terminal, within 6 m in
+  // height and 4 m from every pad another bot holds.
+  uint32_t SpreadPad(PPCContext &ctx, uint8_t *base, uint32_t terminal, uint32_t team, int slot, float radius,
+                     uint32_t self)
+  {
+    if (!g_spread_scratch && !(g_spread_scratch = REX_KERNEL_MEMORY()->SystemHeapAlloc(16)))
+    {
+      return 0;
+    }
+    const float tx = LoadFloat(base, terminal + kPosition), ty = LoadFloat(base, terminal + kPosition + 4),
+                tz = LoadFloat(base, terminal + kPosition + 8);
+    for (int tries = 0; tries < 48; ++tries)
+    {
+      // 16 directions at the radius, then at 1.5 x and 2 x it (the 9 m ring has few pads on some maps).
+      const int k = tries % 16;
+      const float r = radius * (tries < 16 ? 1.0f : tries < 32 ? 1.5f : 2.0f);
+      const int dir = ((slot * 2 + int(team & 1)) + k * 5) % 16; // 5 is prime to 16: every direction once
+      const float a = float(dir) * 6.2831853f / 16.0f;
+      StoreFloat(base, g_spread_scratch, tx + r * std::cos(a));
+      StoreFloat(base, g_spread_scratch + 4, ty);
+      StoreFloat(base, g_spread_scratch + 8, tz + r * std::sin(a));
+      const uint32_t pad = RarePadWithin(ctx, base, g_spread_scratch, 600.0f, true);
+      if (!IsGuestPointer(pad))
+      {
+        continue;
+      }
+      const float px = LoadFloat(base, pad + 16), py = LoadFloat(base, pad + 20), pz = LoadFloat(base, pad + 24);
+      const float d = std::sqrt((px - tx) * (px - tx) + (pz - tz) * (pz - tz));
+      if (d < r * 0.5f || d > r * 2.2f || std::fabs(py - ty) > 600.0f)
+      {
+        continue;
+      }
+      bool close = false;
+      for (const auto &[other, pick] : g_prot_spread)
+      {
+        if (other != self && IsGuestPointer(pick.pad) && pick.terminal == terminal)
+        {
+          const float ox = LoadFloat(base, pick.pad + 16) - px, oz = LoadFloat(base, pick.pad + 24) - pz;
+          close = close || ox * ox + oz * oz < 400.0f * 400.0f;
+        }
+      }
+      if (!close)
+      {
+        return pad;
+      }
+    }
+    return 0;
+  }
+
+  // His pad for this slot (kept while the terminal, slot and kind stay; an outer one changes every 40 s); Rare
+  // re-plans on a change. 0: none found (the plain terminal pad then).
+  uint32_t SpreadAssign(PPCContext &ctx, uint8_t *base, uint32_t bot, uint32_t team, uint32_t terminal, int slot,
+                        bool outer)
+  {
+    SpreadPick &pick = g_prot_spread[bot];
+    const double epoch = outer ? std::floor(SpreadClock() / kSpreadRotate) : -1.0;
+    // Kept while the terminal, the kind and the epoch stay (not the slot: roles shift as hunters see or lose the
+    // hacker, and a re-pick re-plans his route).
+    if (pick.terminal == terminal && pick.outer == outer && pick.epoch == epoch &&
+        (pick.pad || SpreadClock() < pick.retry_at))
+    {
+      return pick.pad;
+    }
+    const bool was_none = pick.terminal == terminal && pick.outer == outer && !pick.pad && pick.none_logged;
+    const float radius = outer ? kSpreadOuter[size_t(slot) % std::size(kSpreadOuter)] : kSpreadRing;
+    // Outer pads move round the ring each epoch (another direction), so the spare bots roam the approaches.
+    const int turn = outer ? slot + int(std::fmod(epoch, 16.0)) * 3 : slot;
+    const uint32_t old = pick.pad;
+    pick = SpreadPick{SpreadPad(ctx, base, terminal, team, turn, radius, bot), terminal, slot, outer, epoch};
+    pick.retry_at = pick.pad ? 0.0 : SpreadClock() + 5.0;
+    pick.none_logged = was_none;
+    ++g_spread_counts[pick.pad ? (outer ? 1 : 0) : 2];
+    if (pick.pad != old && pick.pad)
+    {
+      if (const uint32_t brain = objective_bots::BrainOf(base, bot))
+      {
+        OurReplan(ctx, base, brain, "Protection spread: a new pad");
+      }
+    }
+    if (Log() && !(was_none && !pick.pad))
+    {
+      pick.none_logged = !pick.pad;
+      REXLOG_INFO("pdz_scenario: Protection spread: bot {:08X} ({}, team {}) {} slot {}: pad {:08X} ({:.1f} m from the live "
+                  "terminal {:08X}){}",
+                  bot, BotName(base, bot), team, outer ? "outer ring (spare, roams the approaches)" : "patrol ring", slot,
+                  pick.pad, IsGuestPointer(pick.pad) ? Distance(base, pick.pad + 16 - kPosition, terminal) / 100.0f : -1.0f,
+                  terminal, pick.pad ? "" : ": none found, the terminal's own pad");
+    }
+    return pick.pad;
+  }
+
+  // Crowd watch (diagnostic, pdz_scenario_log, Protection): once a second, per team, the most live members within
+  // 8 m (flat; 3 m in height) of one of them. "Bunched" = more than half of a team's live members (4+) there.
+  // Logged: a bunch's start with who is in it (role, Rare's goal, distances), its end, and every 15 s the running
+  // totals; at match end (a new manager) the totals of the match.
+  struct CrowdTeam
+  {
+    double bunched_s = 0.0, longest = 0.0, run = 0.0;
+    int max_group = 0, samples = 0;
+    double group_sum = 0.0;
+  };
+  CrowdTeam g_crowd[kTeams];
+  double g_crowd_next = 0.0, g_crowd_log = 0.0, g_crowd_start = -1.0;
+
+  void CrowdTotals(const char *when)
+  {
+    if (!Log() || g_crowd_start < 0.0)
+    {
+      return;
+    }
+    std::string text;
+    for (uint32_t t = 0; t < uint32_t(kTeams); ++t)
+    {
+      const CrowdTeam &c = g_crowd[t];
+      if (c.max_group == 0)
+      {
+        continue; // no such team
+      }
+      text += fmt::format("{}team {}: bunched {:.0f} s (longest {:.0f} s), biggest group {}, mean group {:.1f}",
+                          text.empty() ? "" : "; ", t, c.bunched_s, c.longest, c.max_group, c.samples ? c.group_sum / c.samples : 0.0);
+    }
+    REXLOG_INFO("pdz_scenario: Protection crowd watch ({}, {:.0f} s watched; spread {}): {}; spread picks: ring {}, outer {}, "
+                "none found {}",
+                when, SpreadClock() - g_crowd_start, SpreadOn() ? "on" : "off", text, g_spread_counts[0], g_spread_counts[1],
+                g_spread_counts[2]);
+  }
+
+  void CrowdWatch(PPCContext &ctx, uint8_t *base, uint32_t terminal, const uint32_t (&hackers)[kTeams])
+  {
+    if (!Log())
+    {
+      return;
+    }
+    const double now = SpreadClock();
+    if (now < g_crowd_next)
+    {
+      return;
+    }
+    const double step = g_crowd_next > 0.0 ? std::min(2.0, now - (g_crowd_next - 1.0)) : 1.0;
+    g_crowd_next = now + 1.0;
+    if (g_crowd_start < 0.0)
+    {
+      g_crowd_start = now;
+      g_crowd_log = now + 15.0;
+    }
+    if (now - g_crowd_start < 5.0)
+    {
+      return; // the match's first seconds: everyone still at the map origin / the spawn (overnight 092's first run)
+    }
+    for (uint32_t team = 0; team < uint32_t(kTeams); ++team)
+    {
+      std::vector<uint32_t> live;
+      for (uint32_t p : TeamMembers(ctx, base, team))
+      {
+        const uint32_t c = Load32(base, p + kParticipantCharacter);
+        if (IsGuestPointer(c) && !objective_bots::CharacterDown(ctx, base, c))
+        {
+          live.push_back(c);
+        }
+      }
+      size_t best = 0, centre = 0;
+      for (size_t i = 0; i < live.size(); ++i)
+      {
+        size_t n = 0;
+        for (size_t j = 0; j < live.size(); ++j)
+        {
+          const float dx = LoadFloat(base, live[i] + kPosition) - LoadFloat(base, live[j] + kPosition);
+          const float dz = LoadFloat(base, live[i] + kPosition + 8) - LoadFloat(base, live[j] + kPosition + 8);
+          const float dy = LoadFloat(base, live[i] + kPosition + 4) - LoadFloat(base, live[j] + kPosition + 4);
+          n += dx * dx + dz * dz <= 800.0f * 800.0f && std::fabs(dy) <= 300.0f;
+        }
+        if (n > best)
+        {
+          best = n;
+          centre = i;
+        }
+      }
+      CrowdTeam &c = g_crowd[team];
+      ++c.samples;
+      c.group_sum += double(best);
+      c.max_group = std::max(c.max_group, int(best));
+      const bool bunched = live.size() >= 4 && best * 2 > live.size();
+      if (bunched)
+      {
+        if (c.run == 0.0)
+        {
+          std::string who;
+          for (uint32_t m : live)
+          {
+            const float dx = LoadFloat(base, live[centre] + kPosition) - LoadFloat(base, m + kPosition);
+            const float dz = LoadFloat(base, live[centre] + kPosition + 8) - LoadFloat(base, m + kPosition + 8);
+            if (dx * dx + dz * dz > 800.0f * 800.0f)
+            {
+              continue;
+            }
+            const auto r = g_bot_roles.find(m);
+            const auto sp = g_prot_spread.find(m);
+            const char *role = m == hackers[team] ? "hacker" : !IsBot(base, m) ? "human"
+                               : r != g_bot_roles.end() ? objective_bots::RoleName(r->second) : "-";
+            who += fmt::format(" {} ({}{}, goal {}, terminal {:.0f} m)", BotName(base, m), role,
+                               sp != g_prot_spread.end() && sp->second.pad ? (sp->second.outer ? ", outer pad" : ", ring pad") : "",
+                               IsBot(base, m) ? int32_t(Load32(base, m + kBotGoal)) : -1,
+                               IsGuestPointer(terminal) ? Distance(base, m, terminal) / 100.0f : -1.0f);
+          }
+          REXLOG_INFO("pdz_scenario: Protection crowd watch: team {} BUNCHED: {} of {} live within 8 m of ({:.0f}, {:.0f}, "
+                      "{:.0f}); live terminal {:08X}{}; hackers {:08X} / {:08X}; in it:{}",
+                      team, best, live.size(), LoadFloat(base, live[centre] + kPosition),
+                      LoadFloat(base, live[centre] + kPosition + 4), LoadFloat(base, live[centre] + kPosition + 8), terminal,
+                      IsGuestPointer(terminal) ? fmt::format(" ({:.0f} m away)", Distance(base, live[centre], terminal) / 100.0f)
+                                               : std::string(" (none)"),
+                      hackers[0], hackers[1], who);
+        }
+        c.run += step;
+        c.bunched_s += step;
+        c.longest = std::max(c.longest, c.run);
+      }
+      else if (c.run > 0.0)
+      {
+        REXLOG_INFO("pdz_scenario: Protection crowd watch: team {} no longer bunched after {:.0f} s (biggest group now {} of "
+                    "{})",
+                    team, c.run, best, live.size());
+        c.run = 0.0;
+      }
+    }
+    if (now >= g_crowd_log)
+    {
+      g_crowd_log = now + 15.0;
+      CrowdTotals("so far");
+    }
+  }
+
   // pdz_protection_objective_focus (2026-10-25: the hacker is the
   // carrier): Rare's CTF groups (8214ACC0: group 2 = n / 6 + 1, none below
   // 2; group 3 = n / 7 + 1, none below 4; group 1 the rest) over each team's
@@ -24044,12 +24654,71 @@ namespace
       const size_t group2 = n < 2 ? 0 : n / 6 + 1;
       const size_t group3 = n < 4 ? 0 : n / 7 + 1;
       const size_t group1 = n - std::min(n, group2 + group3);
+      const bool spread = SpreadOn() && IsGuestPointer(terminal);
+      size_t escorts = 0, hunters = 0, patrols = 0, spares = 0;
+      // A spare helper (pdz_protection_spread): his own pad on the outer ring.
+      const auto spare = [&](uint32_t bot) {
+        StillCheck(ctx, base, bot, objective_bots::Role::Guard);
+        SpreadAssign(ctx, base, bot, team, terminal, int(spares++), true);
+        g_terminal_patrol.insert(bot);
+        PatrolGoal(ctx, base, bot, team, terminal_moved);
+      };
+      // A patroller: his own pad on the ring round the terminal (spread), else the terminal's pad.
+      const auto patrol = [&](uint32_t bot) {
+        if (spread && patrols >= kSpreadPatrol)
+        {
+          spare(bot);
+          return;
+        }
+        StillCheck(ctx, base, bot, objective_bots::Role::Guard);
+        if (spread)
+        {
+          SpreadAssign(ctx, base, bot, team, terminal, int(patrols), false);
+        }
+        ++patrols;
+        g_terminal_patrol.insert(bot);
+        PatrolGoal(ctx, base, bot, team, terminal_moved);
+      };
       for (size_t i = 0; i < n; ++i)
       {
         const uint32_t bot = helpers[i];
         const int group = i < group1 ? 1 : i < group1 + group2 ? 2 : 3;
+        if (!spread)
+        {
+          g_prot_spread.erase(bot);
+        }
+        if (spread && group == 1 && own && escorts >= kSpreadEscorts)
+        {
+          // Enough escorts: a hunter if he perceives the enemy hacker (fair hunt), else a spare.
+          if (enemy && hunters < kSpreadHunters &&
+              (!REXCVAR_GET(pdz_protection_fair_hunt) || FairHuntNow(ctx, base, bot, enemy)))
+          {
+            ++hunters;
+            StillCheck(ctx, base, bot, objective_bots::Role::Hunt);
+            g_prot_spread.erase(bot);
+            SetRole(ctx, base, bot, objective_bots::Role::Hunt, objective_bots::kGoalAttackCarrier, enemy);
+          }
+          else
+          {
+            spare(bot);
+          }
+          continue;
+        }
+        if (spread && !(group == 1 && own) && (group == 1 || group == 3) && enemy && hunters >= kSpreadHunters &&
+            (!REXCVAR_GET(pdz_protection_fair_hunt) || FairHuntNow(ctx, base, bot, enemy)))
+        {
+          spare(bot); // enough hunters on the enemy hacker
+          continue;
+        }
+        if (spread && group == 3 && !enemy)
+        {
+          spare(bot); // was Rare's roam: the approaches instead
+          continue;
+        }
         if (group == 1 && own)
         {
+          ++escorts;
+          g_prot_spread.erase(bot);
           StillCheck(ctx, base, bot, objective_bots::Role::Escort);
           SetRole(ctx, base, bot, objective_bots::Role::Escort, objective_bots::kGoalEscort, hackers[team]);
         }
@@ -24059,9 +24728,7 @@ namespace
           // Fair hunt: he doesn't perceive the hacker: the live terminal.
           if (IsGuestPointer(terminal))
           {
-            StillCheck(ctx, base, bot, objective_bots::Role::Guard);
-            g_terminal_patrol.insert(bot);
-            PatrolGoal(ctx, base, bot, team, terminal_moved);
+            patrol(bot);
           }
           else
           {
@@ -24071,6 +24738,8 @@ namespace
         }
         else if ((group == 1 || group == 3) && enemy)
         {
+          ++hunters;
+          g_prot_spread.erase(bot);
           StillCheck(ctx, base, bot, objective_bots::Role::Hunt);
           SetRole(ctx, base, bot, objective_bots::Role::Hunt, objective_bots::kGoalAttackCarrier, enemy);
           if (REXCVAR_GET(pdz_protection_fair_hunt))
@@ -24080,18 +24749,27 @@ namespace
         }
         else if (group != 3 && IsGuestPointer(terminal))
         {
-          StillCheck(ctx, base, bot, objective_bots::Role::Guard);
-          g_terminal_patrol.insert(bot);
-          PatrolGoal(ctx, base, bot, team, terminal_moved);
+          patrol(bot);
         }
         else
         {
+          g_prot_spread.erase(bot);
           SetRole(ctx, base, bot, objective_bots::Role::Guard, objective_bots::kGoalRoam, 0);
         }
       }
     }
   }
 } // namespace
+
+uint32_t PdzProtectionSpreadPad(uint32_t character, uint32_t terminal)
+{
+  if (!SpreadOn())
+  {
+    return 0;
+  }
+  const auto it = g_prot_spread.find(character);
+  return it != g_prot_spread.end() && it->second.terminal == terminal ? it->second.pad : 0;
+}
 
 void PdzProtectionBotsTick(PPCContext &ctx, uint8_t *base, uint32_t manager)
 {
@@ -24111,6 +24789,15 @@ void PdzProtectionBotsTick(PPCContext &ctx, uint8_t *base, uint32_t manager)
     g_bot_roles.clear();
     g_goal_sent.clear();
     g_fair_hunt.clear();
+    CrowdTotals("match over");
+    g_prot_spread.clear();
+    std::fill(std::begin(g_spread_counts), std::end(g_spread_counts), 0);
+    for (CrowdTeam &c : g_crowd)
+    {
+      c = CrowdTeam{};
+    }
+    g_crowd_next = 0.0;
+    g_crowd_start = -1.0;
     g_bots_manager = manager;
     g_bots_last = now;
   }
@@ -24208,6 +24895,8 @@ void PdzProtectionBotsTick(PPCContext &ctx, uint8_t *base, uint32_t manager)
       Call(ctx, base, sub_8244D518, manager, participant, terminal);
     }
   }
+
+  CrowdWatch(ctx, base, terminal, hackers);
 
   // Roles for the other bots of each team.
   if (REXCVAR_GET(pdz_protection_objective_focus))

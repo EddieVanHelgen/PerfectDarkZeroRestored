@@ -290,7 +290,7 @@ namespace pdz::native::hlslfix
       }
       const std::string index = hlsl.substr(index_begin, index_end - index_begin);
       body.append(hlsl, copied, p - copied);
-      body += "pdzTfetch3DS(g_Texture3D[" + index + "], g_Texture2DArray[" + index + "], ";
+      body += "pdzTfetch3DS(" + index + "u, g_Texture3D[" + index + "], g_Texture2DArray[" + index + "], ";
       copied = index_end + 3;
       slots |= 1u << slot;
       ++calls;
@@ -316,20 +316,28 @@ namespace pdz::native::hlslfix
              "// k2D binding of a tfetch3D), null for a true 3D texture (GetDimensions 0: the Texture3D path).",
              "Texture2DArray<float4> g_Texture2DArray[32] : register(t0, space3);",
              "",
-             "float4 pdzTfetch3DS(Texture3D<float4> t, Texture2DArray<float4> ta, SamplerState s, float3 uvw, float3 offset)",
+             "float4 pdzTfetch3DS(uint slot, Texture3D<float4> t, Texture2DArray<float4> ta, SamplerState s, float3 uvw,",
+             "                    float3 offset)",
              "{",
              "    uint w, h, layers;",
              "    ta.GetDimensions(w, h, layers);",
+             "    // pdz_fix_water_loop (native_draw.cpp WaterLoopMask): bit `slot` of g_Reserved.y = the fetch constant's",
+             "    // clamp_z is repeat, so the stack's layers wrap (the last blends into the first, as a looping animation",
+             "    // needs) instead of being clamped to the first / last layer.",
+             "    bool wrap = ((g_Reserved.y >> slot) & 1u) != 0u;",
              "    [branch] if (layers == 0u)",
              "        return tfetch3D(t, s, uvw, offset);",
              "    // SDK k3DOrStacked with the linear volume filter: z * layers clamped to the layer centres, the two layers",
              "    // around it lerped, the LOD from xy only (Texture2DArray.Sample), the sampler's anisotropy.",
              "    float2 uv = uvw.xy + offset.xy / float2(w, h);",
-             "    float z = clamp(uvw.z * float(layers) + offset.z, 0.5, float(layers) - 0.5) - 0.5;",
+             "    float n = float(layers);",
+             "    float z = wrap ? uvw.z * n + offset.z - 0.5 : clamp(uvw.z * n + offset.z, 0.5, n - 0.5) - 0.5;",
              "    float l = floor(z);",
              "    float f = z - l;",
+             "    l = wrap ? l - n * floor(l / n) : l;",
+             "    float l1 = wrap ? (l + 1.0 >= n ? 0.0 : l + 1.0) : min(l + 1.0, n - 1.0);",
              "    float4 a = ta.Sample(s, float3(uv, l));",
-             "    float4 b = ta.Sample(s, float3(uv, min(l + 1.0, float(layers) - 1.0)));",
+             "    float4 b = ta.Sample(s, float3(uv, l1));",
              "    return f > 0.0 ? lerp(a, b, f) : a;",
              "}",
              "",

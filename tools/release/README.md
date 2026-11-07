@@ -88,7 +88,7 @@ You can add your own MP3 files to the multiplayer Music choice:
 
 ## Performance
 
-So far PDZ Restored has been tested on one PC (RTX 5090, 4K 120 Hz screen). There it runs the campaign at 120 fps
+So far PDZ Restored has been tested on one PC, with an NVIDIA graphics card. There it runs the campaign at 120 fps
 and multiplayer at 60.
 
 Slower PCs should hold 60 fps. How far above 60 you get depends mostly on your processor. AMD and Intel graphics

@@ -5,6 +5,7 @@
 #include "native_draw.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -129,6 +130,8 @@ REXCVAR_DEFINE_BOOL(pdz_native_indexed_up, true, "Render",
                     "of Subway / Bridge / Arena and the rings and glow over the front end (20 a frame). Off = not "
                     "drawn natively, as before the hook (A/B).");
 REXCVAR_DECLARE(bool, pdz_native_texture_lock_tables); // native_textures.cpp: OnTextureRewritten
+REXCVAR_DECLARE(bool, pdz_fix_water_loop); // game_cvars.cpp: the ripple stack's layers wrap (MarkWaterLoop)
+REXCVAR_DECLARE(bool, pdz_game_fixes);
 REXCVAR_DEFINE_INT32(pdz_native_split_tables, 1, "Render",
                      "Native renderer, split screen (stage1/subagents/split.md): the per-frame SRV descriptor tables are "
                      "keyed by the draw's shaders and raw fetch constants, so a draw of player 2's pass found player "
@@ -1397,6 +1400,75 @@ namespace pdz::native
                          g_small_cb.bool_loop.reused, g_small_cb.bool_loop.reused + g_small_cb.bool_loop.uploads,
                          g_small_cb.system.reused, g_small_cb.system.reused + g_small_cb.system.uploads,
                          REXCVAR_GET(pdz_native_cb_dedupe) ? "on" : "off");
+    }
+
+    // pdz_fix_water_loop (0.9.2; transparency_water.cpp has the key and the story): the pixel shader's stacked
+    // tfetch3D slots (pdz_native_stacked_array) whose fetch constant says clamp_z = repeat. pdzTfetch3DS
+    // (native_hlslfix.h) wraps their layers (the last blends into the first) instead of clamping them to the first /
+    // last layer as the SDK does: Rare's water animations (ripple stacks, caustics, running water) are looping stacks
+    // whose layer coordinate Rare wraps by 1.0 every few seconds, which the clamp turned into a freeze and a jump.
+    std::atomic<uint64_t> g_water_loop_draws{0};
+    constexpr uint32_t kWaterLoopMinLayers = 8;
+
+    uint32_t WaterLoopMask(const shadow::DrawRecord &r, const NativeShader *ps)
+    {
+      if (!ps || ps->array_slots == 0 || !REXCVAR_GET(pdz_fix_water_loop) || !REXCVAR_GET(pdz_game_fixes))
+      {
+        return 0;
+      }
+      uint32_t mask = 0, clamped = 0;
+      uint32_t depth_of[32] = {};
+      for (const ShaderTexture &t : ps->textures)
+      {
+        if (t.slot < 32 && ((ps->array_slots >> t.slot) & 1u))
+        {
+          const FetchDecoded f = DecodeFetch(r.fetch_be + t.slot * shadow::dev::kFetchConstantBytes);
+          // A stack of 8 or more layers (an animation: the sea's ripples 16, the caustics 32) whose fetch says
+          // repeat on its layer axis (xenos ClampMode kRepeat). Smaller stacks (2-layer blends) keep the clamp.
+          if (f.dimension == 1 && f.depth >= kWaterLoopMinLayers && f.clamp_z == 0)
+          {
+            mask |= 1u << t.slot;
+          }
+          else if (f.dimension == 1 && f.depth > 1)
+          {
+            clamped |= 1u << t.slot; // a stack left as it was (fewer layers, or its fetch says clamp)
+          }
+          depth_of[t.slot] = f.depth;
+        }
+      }
+      if (mask != 0)
+      {
+        ++g_water_loop_draws;
+      }
+      if (mask != 0 || clamped != 0)
+      {
+        // One line per pixel shader (the first 64): which of its stacked slots wrap.
+        static std::mutex seen_mutex;
+        static uint64_t seen[64] = {};
+        static uint32_t seen_count = 0;
+        std::lock_guard<std::mutex> lock(seen_mutex);
+        bool known = false;
+        for (uint32_t i = 0; i < seen_count && !known; ++i)
+        {
+          known = seen[i] == ps->hash;
+        }
+        if (!known && seen_count < 64)
+        {
+          seen[seen_count++] = ps->hash;
+          std::string slots;
+          for (uint32_t n = 0; n < 32; ++n)
+          {
+            if (((mask | clamped) >> n) & 1u)
+            {
+              slots += fmt::format(" t{} {} ({} layers)", n, (mask >> n) & 1u ? "wraps" : "clamped",
+                                   depth_of[n]);
+            }
+          }
+          REXLOG_INFO("pdz_fix_water_loop: ps {:016X} stacked slots:{} ({} draws wrapped so far)", ps->hash, slots,
+                      g_water_loop_draws.load());
+        }
+      }
+      return mask;
     }
 
     D3D12_GPU_VIRTUAL_ADDRESS UploadFloatConstants(NativeDevice &dev, const uint8_t *dev_ptr, uint32_t dev_offset,
@@ -3103,6 +3175,7 @@ namespace pdz::native
           {
             sc->pad[0] = tf.resolution_scale;
           }
+          sc->pad[1] = WaterLoopMask(r, ps); // g_Reserved.y: stacked slots whose layers wrap (pdz_fix_water_loop)
           for (uint32_t i = 0; i < 3; ++i)
           {
             sc->ndc_scale[i] = hv.ndc_scale[i];

@@ -13,7 +13,7 @@
 //                                                                                vertices, state, the files above
 //
 // and pdz_native_draw_dump_rt - 1 further matching draws get their own _rt0_after files (which later draw changed
-// what). .raw files are the rows at the readback pitch (the .json gives format, pitch and size); .ppm / .pgm exist for
+// what; a draw in that window on another colour target than the last readback's also gets a _rt0_before). .raw files are the rows at the readback pitch (the .json gives format, pitch and size); .ppm / .pgm exist for
 // 8-bit UNORM / sRGB, 10:10:10:2 and 16-bit float formats (alpha of RGBA in <stem>_alpha.pgm).
 #include "native_drawdump.h"
 
@@ -109,6 +109,7 @@ namespace pdz::native::drawdump
       bool picked_done = false;
       uint32_t picked_sequence = 0;
       uint32_t rt_after_left = 0;
+      const void *last_rt = nullptr; // colour target 0 of the last readback (a new target gets a _rt0_before)
       uint32_t files = 0;
       // Between BeforeDraw and AfterDraw.
       bool pending = false;
@@ -289,14 +290,14 @@ namespace pdz::native::drawdump
 
     bool EnsureDir()
     {
-      if (g.dir_ready)
-      {
-        return true;
-      }
       const std::string dir = REXCVAR_GET(pdz_native_draw_dump_dir);
       if (dir.empty())
       {
         return false;
+      }
+      if (g.dir_ready && g.dir == std::filesystem::path(dir))
+      {
+        return true; // a changed folder (pdz_trace_on_mark: one per capture) is made below
       }
       std::error_code ec;
       std::filesystem::create_directories(dir, ec);
@@ -609,6 +610,7 @@ namespace pdz::native::drawdump
         if (b.rt[0] && b.rt[0]->resource)
         {
           AppendFileJson(DumpResource(*dev, b.rt[0]->resource, b.rt[0]->state, stem + "_rt0_before", "rt0 before"));
+          g.last_rt = b.rt[0]->resource;
         }
       }
     }
@@ -757,7 +759,24 @@ namespace pdz::native::drawdump
       g.picked_files.clear();
       g_picked_json_files.clear();
       g.rt_after_left = uint32_t(std::max(0, REXCVAR_GET(pdz_native_draw_dump_rt)));
+      g.last_rt = nullptr;
       DumpPickedBefore(base, r, vs, ps);
+    }
+    else if (g.rt_after_left > 0)
+    {
+      // In the readback window, a draw on another colour target than the last readback's also gets its target
+      // before the draw, so its own _rt0_after can be compared with what it drew over.
+      NativeDevice *dev = NativeDevice::Get();
+      const Surfaces::Bound b = Surfaces::Get().GetBound(base, r.device);
+      if (dev && dev->in_frame() && b.rt[0] && b.rt[0]->resource && b.rt[0]->resource != g.last_rt && EnsureDir())
+      {
+        const std::string stem = Stem(r.frame, r.sequence) + "_rt0_before";
+        if (!DumpResource(*dev, b.rt[0]->resource, b.rt[0]->state, stem, "rt0 before").empty())
+        {
+          Line(fmt::format("  rt0 before #{} -> {} (a new target in the readback window)", r.sequence, stem));
+        }
+        g.last_rt = b.rt[0]->resource;
+      }
     }
     return true;
   }
@@ -1039,6 +1058,7 @@ namespace pdz::native::drawdump
       {
         const std::string frag =
             DumpResource(*dev, b.rt[0]->resource, b.rt[0]->state, Stem(r.frame, r.sequence) + "_rt0_after", "rt0 after");
+        g.last_rt = b.rt[0]->resource;
         if (!frag.empty())
         {
           Line(fmt::format("  rt0 after #{} -> {}_rt0_after (picked #{})", r.sequence, Stem(r.frame, r.sequence),

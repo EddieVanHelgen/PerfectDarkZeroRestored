@@ -98,6 +98,7 @@ list(APPEND PERFECTDARKZERORECOMP_SOURCES
     src/mod/physics_step.cpp
     src/mod/file_read_log.cpp
     src/mod/stream_bank_warm.cpp
+    src/mod/transparency_water.cpp
     src/mod/native_memcpy.cpp
     src/mod/hook_profile.cpp
     src/mod/crash_dump.cpp
@@ -150,6 +151,7 @@ list(APPEND PERFECTDARKZERORECOMP_SOURCES
     src/setup/setup_window.cpp
     src/setup/theme.cpp
     src/setup/settings_window.cpp
+    src/setup/update_check.cpp
     src/setup/map_packs.cpp
 )
 

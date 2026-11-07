@@ -428,8 +428,12 @@ pdz_sabotage_play_weapons = true
 pdz_sabotage_play_shop = true
 pdz_sabotage_play_team = true
 pdz_sabotage_play_squads = true
+# 0.9.2: a gun stuck reloading gets a ready gun, then another gun (needs pdz_sabotage_play_weapons).
+pdz_sabotage_reload_guard = true
 pdz_ptf_objective_focus = true
 pdz_protection_objective_focus = true
+# 0.9.2: Protection helpers spread out (3 escorts, a guard ring, the rest on the approaches).
+pdz_protection_spread = true
 # Infection above 16 players offline (up to 32).
 pdz_infection_32 = true
 # Fix: Rare's recorded multiplayer announcer lines that their code never plays.

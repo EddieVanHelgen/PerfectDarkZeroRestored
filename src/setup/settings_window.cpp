@@ -5,6 +5,7 @@
 #include "map_packs.h"
 #include "setup_window.h"
 #include "theme.h"
+#include "update_check.h"
 #include "../mod/render/native/native_dxc.h" // DeveloperBuild
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -60,6 +61,7 @@ REXCVAR_DEFINE_STRING(pdz_settings_test_answer, "swap", "Testing",
                       "TESTING TOOL: the answer pdz_settings_test_rebind gives when an input is already used: swap, "
                       "both or cancel");
 REXCVAR_DECLARE(bool, pdz_setup_quiet);
+REXCVAR_DECLARE(bool, pdz_update_check);
 
 namespace pdz::settings_ui
 {
@@ -186,6 +188,57 @@ namespace pdz::settings_ui
       {
         f << line << "\r\n";
       }
+    }
+
+    // The value of `key` in the settings file (the line WriteKeys would replace; quotes and a trailing comment
+    // dropped), or "" if the file has no such line.
+    std::string FileValue(const fs::path &p, const std::string &key)
+    {
+      for (const std::string &line : ReadLines(p))
+      {
+        if (!LineIsKey(line, key))
+        {
+          continue;
+        }
+        const size_t v = line.find_first_not_of(" \t", line.find('=') + 1);
+        if (v == std::string::npos)
+        {
+          return {};
+        }
+        if (line[v] == '"')
+        {
+          const size_t end = line.find('"', v + 1);
+          return line.substr(v + 1, end == std::string::npos ? std::string::npos : end - v - 1);
+        }
+        const size_t end = line.find_first_of(" \t#", v);
+        return line.substr(v, end == std::string::npos ? std::string::npos : end - v);
+      }
+      return {};
+    }
+
+    // A setting's saved value as the window shows it, or "" when it isn't set (the compiled default applies).
+    // - Registered now (the exe's and the core's settings): its value, "" while it is still the compiled default.
+    // - Not registered yet (the GPU plugin's, e.g. vsync: the window opens before rexgpu-xenos.dll loads, so the
+    //   registry has no value for it; the SDK applies the file's value when the plugin registers it): the file's.
+    std::string SavedValue(const fs::path &settings_file, const std::string &key)
+    {
+      if (rex::cvar::GetFlagInfo(key))
+      {
+        return rex::cvar::GetFlagSource(key) == rex::cvar::Source::kDefault ? std::string()
+                                                                            : rex::cvar::GetFlagByName(key);
+      }
+      return FileValue(settings_file, key);
+    }
+
+    // Render scale's choices (100% = no line: the native renderer's own pick for the screen) as pdz_native_scale
+    // for a screen of this height. 75% and 50% are never the same value where a smaller one exists (at 2160p both
+    // used to give 2), so a saved choice reads back as itself.
+    int ScaleForChoice(int choice, int screen_height)
+    {
+      const int base = std::clamp(int((screen_height + 360) / 720), 1, 3);
+      const int v75 = std::max(1, int(std::lround(base * 0.75)));
+      const int v50 = std::max(1, int(std::lround(base * 0.5)));
+      return choice == 1 ? v75 : choice == 2 ? (v50 == v75 && v75 > 1 ? v75 - 1 : v50) : base;
     }
 
     std::wstring W(const std::string &s) { return std::wstring(s.begin(), s.end()); }
@@ -357,6 +410,8 @@ namespace pdz::settings_ui
       kRebuild,
       kReset,
       kNetwork,
+      kUpdateCheck, // Advanced: "Check for updates" (pdz_update_check)
+      kUpdateOpen,  // the side bar: "Open download page", shown when a newer release is out
       kHelp = 500,
       kDontShow,
       kSafe,
@@ -377,6 +432,7 @@ namespace pdz::settings_ui
       std::vector<std::pair<DWORD, DWORD>> modes;
       Choice choice = Choice::kQuit;
       bool done = false;
+      bool save_on_close = true; // the close box saves like Play (0.9.2); the capture test closes without saving
       // Controls: each row's bind tokens (keybind value split at ','), and the rebind in progress.
       HWND list = nullptr;
       std::vector<std::vector<std::string>> binds;
@@ -406,6 +462,8 @@ namespace pdz::settings_ui
       HWND list_scroll = nullptr; // the key list's scroll bar (ours; the list's own is clipped off)
       int list_scroll_top = -1;   // the top row it last showed
       HWND tab_buttons[kTabCount] = {};
+      // The update check (update_check.h): the newer release, once known, shown in the side bar.
+      std::string update_version, update_page;
       int px(int v) const { return MulDiv(v, dpi, 96); }
     };
     // The layout (logical pixels at 96 dpi): side bar, content, help strip, footer.
@@ -1281,11 +1339,15 @@ namespace pdz::settings_ui
       }
       // Render scale: the native renderer's integer scale, from the desktop height as its auto profile (100% = auto).
       const Monitor &m = ui.monitors.empty() ? Monitor{} : ui.monitors[size_t(std::max(0, mon))];
-      const int base = std::clamp(int((m.height + 360) / 720), 1, 3);
       const int scale_sel = Sel(ui, kScale);
-      keys.push_back({"pdz_native_scale", scale_sel == 0 ? std::string()
-                                          : fmt::format("{}", std::max(1, int(std::lround(base * (scale_sel == 1 ? 0.75
-                                                                                                                  : 0.5)))))});
+      keys.push_back({"pdz_native_scale",
+                      scale_sel == 0 ? std::string() : fmt::format("{}", ScaleForChoice(scale_sel, int(m.height)))});
+      if (scale_sel == 0 && rex::cvar::GetFlagSource("pdz_native_scale") == rex::cvar::Source::kConfig)
+      {
+        // 100%: the line is removed, and the value the file had is dropped for this start too, so the native
+        // renderer's own pick applies now (not one start later). A command-line value is left alone.
+        rex::cvar::ResetToDefault("pdz_native_scale");
+      }
       const int vs = Sel(ui, kVsync); // on (fixed), vrr, off (vsync off; the pacing stays fixed)
       {
         // On keeps a hand-set "present" / "latch" (Steam Deck / Proton, A/B tests): the window only offers On and VRR.
@@ -1299,6 +1361,7 @@ namespace pdz::settings_ui
       const int fps = Sel(ui, kCampaign); // auto, 120, 60
       keys.push_back({"pdz_sp_120", fps == 2 ? "false" : "true"});
       keys.push_back({"pdz_settings_show", Checked(ui, kDontShow) ? "false" : "true"});
+      keys.push_back({"pdz_update_check", Checked(ui, kUpdateCheck) ? "true" : "false"});
       WriteKeys(ui.ctx.settings_file, keys);
       wchar_t sens[32] = {};
       GetWindowTextW(GetDlgItem(ui.window, kSensitivity), sens, 32);
@@ -1352,7 +1415,7 @@ namespace pdz::settings_ui
     {
       WriteKeys(ui.ctx.settings_file, {{"monitor", ""}, {"fullscreen_exclusive", ""}, {"resolution", ""},
                                        {"pdz_native_scale", ""}, {"pdz_present_pacing", ""}, {"vsync", ""},
-                                       {"pdz_sp_120", ""}, {"pdz_settings_show", ""}});
+                                       {"pdz_sp_120", ""}, {"pdz_settings_show", ""}, {"pdz_update_check", ""}});
       ResetBinds(ui);
       std::vector<std::pair<std::string, std::string>> mapping = {{"pdz_mouse_sensitivity", "2.0"},
                                                                   {"pdz_mouse_invert", "false"}};
@@ -1375,6 +1438,8 @@ namespace pdz::settings_ui
       SetWindowTextW(GetDlgItem(ui.window, kSensitivity), L"2.00");
       SetChecked(ui, kInvert, false);
       SetChecked(ui, kZoomSteps, false);
+      SetChecked(ui, kUpdateCheck, true);
+      rex::cvar::SetFlagByName("pdz_update_check", "true");
       if (rex::cvar::GetFlagByName("pdz_zoom_steps") == "true")
       {
         WriteKeys(ui.ctx.mapping_file, {{"pdz_zoom_steps", "false"}});
@@ -1420,6 +1485,19 @@ namespace pdz::settings_ui
       if (auto t = ui.toggles.find(id); t != ui.toggles.end() && code == BN_CLICKED)
       {
         SetChecked(ui, id, !t->second);
+        if (id == kUpdateCheck && Checked(ui, kUpdateCheck))
+        {
+          update_check::Start(); // ticked now: ask now (once per start)
+        }
+        return;
+      }
+      if (id == kUpdateOpen && code == BN_CLICKED && !ui.update_page.empty())
+      {
+        // The release's page in the browser; nothing is downloaded by us.
+        const std::wstring page = W(ui.update_page);
+        const auto r = reinterpret_cast<INT_PTR>(ShellExecuteW(ui.window, L"open", page.c_str(), nullptr, nullptr,
+                                                               SW_SHOWNORMAL));
+        Note(fmt::format("pdz_update: Open download page: {} ({})", ui.update_page, r > 32 ? "opened" : "failed"));
         return;
       }
       if (id == kPlay || id == kSafe)
@@ -1743,6 +1821,12 @@ namespace pdz::settings_ui
           theme::DrawTitle(dc, RECT{ui->px(22), ui->px(24), side, ui->px(56)}, ui->tf.title_side, ui->dpi, 1);
           theme::Text(dc, W(std::string("Version ") + PDZ_RESTORED_VERSION), RECT{ui->px(22), ui->px(54), side,
                       ui->px(74)}, ui->tf.note, theme::kTextDim, DT_LEFT | DT_SINGLELINE);
+          if (!ui->update_version.empty())
+          {
+            theme::Text(dc, W("Version " + ui->update_version + " is available"),
+                        RECT{ui->px(14), ui->px(456), side - ui->px(8), ui->px(490)}, ui->tf.note, theme::kCyan,
+                        DT_LEFT | DT_WORDBREAK);
+          }
           const wchar_t *headings[kTabCount] = {L"DISPLAY", L"FRAME RATE", L"MAP PACKS", L"CONTROLS", L"ADVANCED"};
           theme::Text(dc, headings[ui->tab], RECT{side + ui->px(32), ui->px(22), rc.right, ui->px(60)}, ui->tf.display,
                       theme::kText, DT_LEFT | DT_SINGLELINE, ui->px(2));
@@ -1949,6 +2033,18 @@ namespace pdz::settings_ui
         }
         return 0;
       case WM_TIMER:
+        if (ui && ui->update_version.empty())
+        {
+          // The update check (a background thread): a newer release shows the notice and the button.
+          const update_check::Result r = update_check::Get();
+          if (r.state == update_check::State::kNewer)
+          {
+            ui->update_version = r.version;
+            ui->update_page = r.page;
+            ShowWindow(GetDlgItem(hwnd, kUpdateOpen), SW_SHOW);
+            InvalidateRect(hwnd, nullptr, FALSE);
+          }
+        }
         if (ui)
         {
           // A controller: up / down move the focus, A presses, LB / RB change tabs, left / right change a choice.
@@ -2055,6 +2151,12 @@ namespace pdz::settings_ui
         return reinterpret_cast<LRESULT>(theme::Brush(strip ? theme::kSideBar : theme::kBackground));
       }
       case WM_CLOSE:
+        // The close box (or Alt+F4): the settings are saved as with Play, and the game doesn't start (kQuit).
+        if (ui && ui->save_on_close && !ui->done)
+        {
+          Save(*ui);
+          Note("pdz_settings: the settings window was closed without playing: settings saved, the game doesn't start");
+        }
         DestroyWindow(hwnd);
         return 0;
       case WM_DESTROY:
@@ -2199,13 +2301,28 @@ namespace pdz::settings_ui
       Combo(ui, kTabDisplay, cx, 154, cw, kResolution, res, 0,
             L"Leave this on your desktop resolution unless you have a reason. Other sizes only apply in Fullscreen.");
       Label(ui, kTabDisplay, L"Render scale", x, 198, lw, true);
-      const std::string scale = rex::cvar::GetFlagByName("pdz_native_scale");
-      Segments(ui, kTabDisplay, cx, 194, 70, kScale, {L"100%", L"75%", L"50%"}, 0,
+      // The saved choice (no line = 100%), matched against the choices for the screen Play saves for.
+      int scale_sel = 0;
+      {
+        const std::string saved = SavedValue(ui.ctx.settings_file, "pdz_native_scale");
+        const int mon_index = cur_mon < int(ui.monitors.size()) ? cur_mon : int(primary);
+        const int height = ui.monitors.empty() ? 0 : int(ui.monitors[size_t(mon_index)].height);
+        const int value = saved.empty() ? 0 : std::atoi(saved.c_str());
+        scale_sel = value <= 0 ? 0 : value == ScaleForChoice(1, height) ? 1 : value == ScaleForChoice(2, height) ? 2 : 0;
+        if (value > 0 && scale_sel == 0)
+        {
+          Note(fmt::format("pdz_settings: pdz_native_scale = {} matches no Render scale choice for this screen: shown "
+                           "as 100%",
+                           value));
+        }
+      }
+      Segments(ui, kTabDisplay, cx, 194, 70, kScale, {L"100%", L"75%", L"50%"}, scale_sel,
             L"Draws the game at a lower resolution and scales it up. Lower is faster on weaker graphics cards, but a "
             L"bit softer.");
       Label(ui, kTabDisplay, L"VSync / VRR", x, 238, lw, true);
       const std::string pacing = rex::cvar::GetFlagByName("pdz_present_pacing");
-      const bool vsync = rex::cvar::GetFlagByName("vsync") != "false";
+      // vsync is the GPU plugin's: not registered yet when the window opens, so it is read from the settings file.
+      const bool vsync = SavedValue(ui.ctx.settings_file, "vsync") != "false";
       // On = fixed (the default; an old "auto" reads as fixed), VRR = vrr, Off = vsync off. No Auto (2026-11-06): the
       // EDID says whether a display can do VRR, not whether the driver has it on (a FreeSync EDID with VRR off in the
       // driver juddered at 117 fps Present(0) on a fixed 120 Hz display).
@@ -2381,6 +2498,11 @@ namespace pdz::settings_ui
              L"Puts everything in this window back to its default. Your saves and map packs aren't touched.");
       // Network play isn't offered: system link isn't there yet (the SDK's networking is stubbed). net_lan stays off
       // by default (no firewall question) and the window leaves it alone.
+      Button(ui, kTabAdvanced, L"Check for updates", x, 140, 420, kUpdateCheck,
+             L"When this window opens, asks GitHub whether a newer PDZ Restored is out and shows it here, with a "
+             L"button to its download page. Nothing about you or your PC is sent, and nothing is ever downloaded.",
+             BS_AUTOCHECKBOX);
+      SetChecked(ui, kUpdateCheck, REXCVAR_GET(pdz_update_check));
       ui.tab_help[kTabAdvanced] = L"Point at a button to see what it does.";
 
       // Bottom: help line, don't show, buttons.
@@ -2403,8 +2525,15 @@ namespace pdz::settings_ui
         MapWindowPoints(nullptr, ui.window, reinterpret_cast<POINT *>(&br), 2);
         MoveWindow(big, br.left, br.top, br.right - br.left, ui.px(42), FALSE);
       }
+      HWND update = Button(ui, -1, L"Open download page", 12, 494, kSideW - 24, kUpdateOpen,
+                           L"Opens the new version's page on GitHub in your browser. Download it from there.");
       RefreshPacks(ui, false);
       ShowTab(ui, packs_tab ? kTabPacks : kTabDisplay);
+      ShowWindow(update, SW_HIDE); // until the update check finds a newer release
+      if (REXCVAR_GET(pdz_update_check))
+      {
+        update_check::Start(); // in the background; the window and the game never wait for it
+      }
       SetTimer(ui.window, 1, 100, nullptr);
       ShowWindow(ui.window, SW_SHOW);
       SetForegroundWindow(ui.window);
@@ -2622,6 +2751,7 @@ namespace pdz::settings_ui
           DeleteDC(mdc);
           ReleaseDC(nullptr, sdc);
         }
+        ui.save_on_close = false; // a capture test changes nothing
         PostMessageW(ui.window, WM_CLOSE, 0, 0);
       }
       MSG msg;
@@ -2683,6 +2813,7 @@ namespace pdz::settings_ui
     {
       REXLOG_INFO("{}", line);
     }
+    update_check::LoggingReady(); // the update check's line, now or when it comes
   }
 
   Choice MaybeShow(const Context &context, bool after_first_setup)

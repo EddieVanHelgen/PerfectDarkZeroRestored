@@ -416,6 +416,25 @@ REXCVAR_DEFINE_BOOL(pdz_fix_cmp_noise, true, "Gameplay",
                     "shot in the data). On by default. Needs pdz_game_fixes")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(pdz_fix_transparency_water, true, "Gameplay",
+                    "Game fix (0.9.2, Rare's bug): see-through surfaces drawn in the wrong order against the water "
+                    "(street-light glows covered by the water's second layer). "
+                    "On by default; F1 toggles it. docs/BUG_AUDIT.md \"Transparency vs water\"")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_fix_water_loop, true, "Gameplay",
+                    "Game fix (0.9.2): Rare's looping water animations (the sea's ripples, caustics, running water: "
+                    "stacks of 16 / 32 frames) loop smoothly instead of freezing and jumping back every few seconds. "
+                    "A stacked texture whose fetch constant says repeat on its layer axis wraps its layers (the last "
+                    "blends into the first) in the native renderer instead of clamping them. On by default; Insert "
+                    "toggles it. Needs pdz_game_fixes")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_transparency_test_alternate, false, "Testing",
+                    "Test aid for pdz_fix_transparency_water: the fix only on odd game frames, so two consecutive "
+                    "captures (a still camera) show its change alone.");
+REXCVAR_DEFINE_INT32(pdz_transparency_trace_frame, 0, "Testing",
+                     "Diagnostic for pdz_fix_transparency_water: log Rare's water / alpha mesh draws (sub_82710CC0) "
+                     "and glow pass (sub_826216D0) with their guest call chains for the one game frame whose counter "
+                     "first reaches this value (0 = off). Lines start with pdz_transwater:.");
 REXCVAR_DEFINE_BOOL(pdz_fix_derez_snapshot, true, "Gameplay",
                     "Emulation fix: the death \"de-rez\" effect (multiplayer and holo deaths: the body "
                     "breaks into coloured cubes) gets its snapshot of the body back from the GPU, so the "
@@ -815,6 +834,14 @@ REXCVAR_DEFINE_BOOL(pdz_protection_fair_hunt, true, "Gameplay",
                     "otherwise they patrol the live terminal on goal 7. false = they always hunt (Rare's goal 3 "
                     "steers to him wherever he is). docs/TU3_BASE.md \"Protection: fair hunt\"")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_protection_spread, true, "Gameplay",
+                    "tu3-base, with pdz_protection_bots and pdz_protection_objective_focus (0.9.2; release log 001: "
+                    "bots bunched in one open area): per team at most 3 escorts, 4 hunters and 4 terminal patrollers; "
+                    "the patrollers on their own pads of a ring 9 m round the live terminal (each team on its own "
+                    "sectors), every other helper on his own pad of an outer ring 18-34 m out on the approaches, a "
+                    "new one every 40 s. false = everyone on the terminal's one pad as before (the test runs' before "
+                    "case). docs/TU3_BASE.md \"Protection: the spread\"")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(pdz_protection_hack_under_fire, true, "Gameplay",
                     "tu3-base, with pdz_mp_cut_scenarios (untested in play): a Protection hacker's hack at the "
@@ -946,6 +973,14 @@ REXCVAR_DEFINE_BOOL(pdz_sabotage_play_weapons, false, "Gameplay",
                     "(launchers for hard pieces and clusters, rapid fire / shotgun for crates; 5 s between "
                     "switches, none while firing); a launcher holder goes for a cluster of pieces. "
                     "docs/TU3_BASE.md \"Sabotage stage 3\"")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_sabotage_reload_guard, true, "Gameplay",
+                    "tu3-base, with pdz_sabotage_bots and pdz_sabotage_play_weapons (0.9.2): the reload guard. A bot whose "
+                    "gun reloads for 2 s without finishing, or starts a second reload animation without a shot (the gun cycling "
+                    "10 -> 14 -> 10: release log 002, a bot locked reloading at a Subway fuel dump), gets one step per "
+                    "trigger: the clip refilled Rare's AI way (when empty) and Rare's instant raise; then another gun "
+                    "he carries with ammo; then his attacker job's fallback (melee at a soft piece, another spot at a "
+                    "hard one). false = off (the test runs' before case). docs/TU3_BASE.md \"Sabotage: the reload guard\"")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(pdz_sabotage_play_shop, false, "Gameplay",

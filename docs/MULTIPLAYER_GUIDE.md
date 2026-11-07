@@ -145,7 +145,14 @@ the enemy's.
 - (experimental) Protection bots: bot hackers that fetch the Data Thief,
   go to the live terminal and take Rare's own ten-second bot hack time,
   with teammates escorting them, hunting the enemy hacker and guarding
-  the terminal.
+  the terminal. Since 0.9.2 they spread out: at most three escorts stay with
+  the hacker, the terminal's guards stand on their own spots round it,
+  and the rest watch the ways in, moving to a new spot every 40 seconds,
+  so a team no longer gathers in one crowd;
+- Sabotage bots: a bot whose gun gets stuck reloading (in 0.9.1 one could
+  replay its reload for a minute at a fuel dump) is given a ready gun
+  within about two seconds, then another gun he carries, then his other
+  ways to break the target (0.9.2).
 
 ## What the maps contain
 

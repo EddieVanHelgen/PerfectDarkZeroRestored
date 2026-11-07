@@ -87,6 +87,7 @@
 #include "native_postfx.h"
 #include "native_textures.h"
 #include "native_autodiff.h"
+#include <spdlog/sinks/basic_file_sink.h>
 #include "native_draw.h"
 #include "native_drawdump.h"
 #include "native_memlog.h"
@@ -97,6 +98,32 @@
 #include "../frame_timing.h"
 #include "../cutscene_dump.h" // pdz_cutscene_frame_dump: the present tap
 
+// Trace on mark (0.9.2, transparency vs water captures by hand): an F12 mark also captures everything about its
+// frame.
+REXCVAR_DEFINE_BOOL(pdz_trace_on_mark, false, "Testing",
+                    "Test aid (off): an F12 mark (bind_mark_spot) also traces its frame: pdz_native_frame_trace (every "
+                    "clear / resolve / draw), pdz_native_draw_dump of every draw (Rare's caller, shaders, states), and "
+                    "pdz_transparency_trace_frame (Rare's mesh / glow calls with guest call chains); then the same for a "
+                    "second mark with pdz_fix_transparency_water flipped (F1), restored after. All lines of the capture "
+                    "also go to logs\\marks\\trace_NNN\\trace.log; a label says when it is saved. Frame A also reads "
+                    "back colour target 0 after each of the 64 draws from Rare's see-through depth rebuild (PS "
+                    "675a96f9) on (trace_NNN\\draws, about 2.4 GB: which see-through draw paints what). The draw dump needs the "
+                    "GPU plugin and no record thread (C:\\Games\\PDZ_PLAY_TRACE.bat).");
+REXCVAR_DECLARE(std::string, pdz_native_draw_dump);
+REXCVAR_DECLARE(int32_t, pdz_native_draw_dump_frames);
+REXCVAR_DECLARE(int32_t, pdz_native_draw_dump_from);
+REXCVAR_DECLARE(int32_t, pdz_native_draw_dump_every);
+REXCVAR_DECLARE(int32_t, pdz_native_draw_dump_lines);
+REXCVAR_DECLARE(int32_t, pdz_native_draw_dump_rt);
+REXCVAR_DECLARE(int32_t, pdz_native_draw_dump_pick);
+REXCVAR_DECLARE(std::string, pdz_native_draw_dump_dir);
+REXCVAR_DECLARE(bool, pdz_fix_transparency_water);
+namespace pdz::transwater
+{
+  void TraceFrame(uint32_t frame, uint32_t count); // transparency_water.cpp: trace these game frames (one-shot)
+  uint32_t CurrentFrame(const uint8_t *base);
+  void ShowStatus(const std::string &text, int seconds); // its on-screen label
+} // namespace pdz::transwater
 REXCVAR_DEFINE_BOOL(pdz_native_gamma_from_gpu, true, "Render",
                     "Native renderer: apply the gamma table the GPU plugin applies (DC_LUT registers, published by the "
                     "SDK) instead of the ramp the game passed to SetGammaRamp.");
@@ -1536,6 +1563,153 @@ namespace pdz::native
       }
     } // namespace mark
 
+    // pdz_trace_on_mark: frame A (the fix as it is) and frame B (F1 flipped), each a mark plus the frame trace, the
+    // draw dump and the transwater trace of its swap; the lines also go to trace_NNN\trace.log.
+    namespace tom
+    {
+      struct State
+      {
+        int stage = 0; // 0 idle, 1 frame A armed, 2 waiting with F1 flipped, 3 frame B armed, 4 closing
+        uint64_t armed_swap = 0, wait_until = 0;
+        bool fix_before = true;
+        std::filesystem::path dir;
+        spdlog::sink_ptr sink;
+      } g;
+
+      void Arm(const uint8_t *base, const char *which)
+      {
+        // Frame A: every draw dumped (the '*'), and the picked draw is the first of PS 675a96f9, Rare's see-through
+        // depth rebuild (sub_82622C8C, once a frame right before the first see-through layer): colour target 0 is
+        // read back before each target change and after it and the next 63 draws (the see-through layers' draws;
+        // trace_NNN\draws). Frame B: lines only. A new text re-arms the dump.
+        const bool a = *which == 'A';
+        REXCVAR_SET(pdz_native_draw_dump, std::string(a ? "675a96f9,*" : "*,*"));
+        REXCVAR_SET(pdz_native_draw_dump_frames, 1);
+        REXCVAR_SET(pdz_native_draw_dump_from, 0);
+        REXCVAR_SET(pdz_native_draw_dump_every, 1);
+        REXCVAR_SET(pdz_native_draw_dump_lines, 400000);
+        REXCVAR_SET(pdz_native_draw_dump_pick, 0);
+        REXCVAR_SET(pdz_native_draw_dump_rt, a ? 64 : 0);
+        REXCVAR_SET(pdz_native_draw_dump_dir, a ? (g.dir / "draws").string() : std::string());
+        // Rare's mesh calls of this game frame and the next: the dumped draws are in one of them (with the record
+        // thread off the native draws inline, so each call's draws sit between its two lines).
+        pdz::transwater::TraceFrame(pdz::transwater::CurrentFrame(base), 2);
+        g.armed_swap = autodiff::SwapCount() + 1;
+        SetFrameTrace(true);
+        REXLOG_INFO("pdz_trace_on_mark: frame {} at swap {} (pdz_fix_transparency_water {}); pdz_trace: begin frame of "
+                    "swap {}",
+                    which, g.armed_swap, REXCVAR_GET(pdz_fix_transparency_water) ? "on" : "off", g.armed_swap);
+        mark::Start(base); // the mark of the same swap: screenshot and pdz_mark line
+      }
+
+      void Begin(const uint8_t *base)
+      {
+        const std::filesystem::path marks = mark::Dir();
+        std::error_code ec;
+        for (uint32_t n = 1; n < 1000; ++n)
+        {
+          const auto d = marks / fmt::format("trace_{:03}", n);
+          if (!std::filesystem::exists(d, ec))
+          {
+            g.dir = d;
+            break;
+          }
+        }
+        std::filesystem::create_directories(g.dir, ec);
+        try
+        {
+          g.sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>((g.dir / "trace.log").string(), true);
+          rex::AddSink(g.sink);
+        }
+        catch (...)
+        {
+          g.sink = nullptr;
+        }
+        g.fix_before = REXCVAR_GET(pdz_fix_transparency_water);
+        pdz::transwater::ShowStatus("Trace capture started: hold still...", 30);
+        REXLOG_INFO("pdz_trace_on_mark: capture {} begins (two frames: the fix {} then {})", g.dir.string(),
+                    g.fix_before ? "on" : "off", g.fix_before ? "off" : "on");
+        g.stage = 1;
+        Arm(base, "A");
+      }
+
+      void EndTraceIfDone()
+      {
+        if (FrameTraceActive() && autodiff::SwapCount() > g.armed_swap)
+        {
+          ResolveTraceQueries();
+          SetFrameTrace(false);
+          REXLOG_INFO("pdz_trace: end frame of swap {}", g.armed_swap);
+        }
+      }
+
+      void Step(const uint8_t *base)
+      {
+        if (g.stage == 0)
+        {
+          return;
+        }
+        const uint64_t now = autodiff::SwapCount();
+        if (g.stage == 1 || g.stage == 3)
+        {
+          EndTraceIfDone();
+          if (FrameTraceActive() || now <= g.armed_swap + 2)
+          {
+            return;
+          }
+          if (g.stage == 1)
+          {
+            REXCVAR_SET(pdz_fix_transparency_water, !g.fix_before);
+            g.wait_until = now + 15;
+            g.stage = 2;
+          }
+          else
+          {
+            REXCVAR_SET(pdz_fix_transparency_water, g.fix_before);
+            g.wait_until = now + 30;
+            g.stage = 4;
+          }
+          return;
+        }
+        if (g.stage == 2 && now >= g.wait_until && !autodiff::MarkBusy())
+        {
+          g.stage = 3;
+          Arm(base, "B");
+          return;
+        }
+        if (g.stage == 4 && now >= g.wait_until && !autodiff::MarkBusy())
+        {
+          REXCVAR_SET(pdz_native_draw_dump, std::string());
+          REXCVAR_SET(pdz_native_draw_dump_rt, 0);
+          REXCVAR_SET(pdz_native_draw_dump_dir, std::string());
+          REXLOG_INFO("pdz_trace_on_mark: capture {} saved (frame A with the fix {}, frame B with it {}; the fix is back "
+                      "{})",
+                      g.dir.string(), g.fix_before ? "on" : "off", g.fix_before ? "off" : "on",
+                      g.fix_before ? "on" : "off");
+          rex::FlushLogging();
+          if (g.sink)
+          {
+            rex::RemoveSink(g.sink);
+            g.sink->flush();
+            g.sink = nullptr;
+          }
+          if (FILE *f = std::fopen((g.dir / "README.txt").string().c_str(), "w"))
+          {
+            std::fprintf(f, "Trace on mark (pdz_trace_on_mark): two frames, A with pdz_fix_transparency_water %s, B "
+                            "with it %s.\ntrace.log: every log line of the capture (pdz_mark, pdz_trace, pdz_drawdump, "
+                            "pdz_transwater).\ndraws\\: frame A's colour target 0 after each draw from Rare's "
+                            "see-through depth rebuild on (f<frame>_d<draw>_rt0_after.ppm, the draw numbers as in the "
+                            "pdz_trace lines).\nThe two screenshots are the mark_NNN_*.png files named in the pdz_mark "
+                            "lines (logs\\marks).\n",
+                         g.fix_before ? "on" : "off", g.fix_before ? "off" : "on");
+            std::fclose(f);
+          }
+          pdz::transwater::ShowStatus("Trace saved: " + g.dir.filename().string() + " (2 frames, fix on and off). You can move again.", 6);
+          g.stage = 0;
+        }
+      }
+    } // namespace tom
+
     // Every Swap, renderer on or off (after autodiff::CountSwap).
     void PollMark(const uint8_t *base)
     {
@@ -1549,11 +1723,17 @@ namespace pdz::native
         mark::g_key_was_down = down;
       }
       autodiff::MarkOnSwap();
-      if (!mark::g_presses.load(std::memory_order_relaxed) || autodiff::MarkBusy())
+      tom::Step(base);
+      if (!mark::g_presses.load(std::memory_order_relaxed) || autodiff::MarkBusy() || tom::g.stage != 0)
       {
         return; // a press during a capture waits for it
       }
       mark::g_presses.fetch_sub(1, std::memory_order_relaxed);
+      if (REXCVAR_GET(pdz_trace_on_mark))
+      {
+        tom::Begin(base);
+        return;
+      }
       mark::Start(base);
     }
 
