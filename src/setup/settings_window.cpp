@@ -62,6 +62,7 @@ REXCVAR_DEFINE_STRING(pdz_settings_test_answer, "swap", "Testing",
                       "both or cancel");
 REXCVAR_DECLARE(bool, pdz_setup_quiet);
 REXCVAR_DECLARE(bool, pdz_update_check);
+REXCVAR_DECLARE(bool, pdz_setup_restarted); // first_run.cpp: setup's own restart after adding TU3
 
 namespace pdz::settings_ui
 {
@@ -2840,7 +2841,8 @@ namespace pdz::settings_ui
     const bool show = REXCVAR_GET(pdz_settings_open) || shift || after_first_setup || REXCVAR_GET(pdz_settings_show);
     // A rebind test shows it even in a quiet test run (it presses Play itself).
     const bool test = !REXCVAR_GET(pdz_settings_test_rebind).empty();
-    if ((!show || REXCVAR_GET(pdz_setup_quiet)) && !test || pdz::native::DeveloperBuild())
+    if ((!show || REXCVAR_GET(pdz_setup_quiet) || REXCVAR_GET(pdz_setup_restarted)) && !test ||
+        pdz::native::DeveloperBuild())
     {
       return Choice::kPlay;
     }

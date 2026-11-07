@@ -1,6 +1,8 @@
 // PDZ Restored: first-run setup (first_run.h).
 #include "first_run.h"
 
+#include "map_packs.h"
+
 #include "setup_window.h"
 #include "theme.h"
 
@@ -55,6 +57,16 @@ REXCVAR_DEFINE_BOOL(pdz_setup_link, true, "Setup",
                     "First-run setup: a disc dump given as extracted files on the same drive as the prepared folder is "
                     "hard-linked there instead of copied (instant, no second copy on disk; the game only reads them). "
                     "Another drive, an ISO or a link that fails: copied as before");
+REXCVAR_DEFINE_STRING(pdz_setup_test_media_id, "", "Testing",
+                      "TESTING TOOL: setup treats the disc's default.xex as if its header said this media ID (8 hex "
+                      "digits, e.g. 40C97944) and doesn't match it by its SHA-1, so a known disc goes the way of a disc "
+                      "setup doesn't know (accepted by its header, its own code checked at the first load). Empty = off");
+REXCVAR_DEFINE_BOOL(pdz_setup_test_image_mismatch, false, "Testing",
+                    "TESTING TOOL: the image check at load reports a mismatch whatever the image is, so the message "
+                    "for a disc with different game code is shown (and setup.json set aside, as for a real one)");
+REXCVAR_DEFINE_BOOL(pdz_setup_restarted, false, "Setup",
+                    "Set by setup itself when it restarts PDZ Restored once after adding Title Update 3 to a disc it "
+                    "didn't know (the settings window isn't shown again). Not for players");
 REXCVAR_DEFINE_STRING(pdz_setup_source, "", "Setup",
                       "Where setup looks for the disc dump and Title Update 3 first. Empty = game\\ next to the exe; "
                       "a file picker asks when nothing is found there.");
@@ -76,13 +88,18 @@ namespace pdz::first_run
     // three discs and their three TU3 packages all give kImageSha1 (the SDK's patcher only warns that the patch was
     // made for another disc's signature), and the five TU3 packages' 29 data files are byte-identical; only their
     // default.xexp differs (its header: media ID and version). Setup takes the disc's own TU3 when several are there.
+    // 0.9.2.1: a disc that isn't in this list (or is listed without a TU3 of its own) is still accepted when its
+    // default.xex is a valid XEX for Perfect Dark Zero (title 4D5307D3). Its own code is then checked at the first
+    // load (VerifyImage): the same as kImageSha1 = no title update needed; otherwise a Title Update 3 (the disc's own
+    // if it carries one, else any) is added and PDZ Restored restarts once, and the final code is checked again.
     struct Pressing
     {
       uint32_t media_id;
       const char *version;
-      const char *xex_sha1; // nullptr: no disc of it seen (accepted by its header, then VerifyImage)
-      const char *xexp_sha1;
-      const wchar_t *tu_file;
+      const char *xex_sha1;  // nullptr: no disc of it seen (accepted by its header, then VerifyImage)
+      const char *xexp_sha1; // nullptr: no Title Update 3 of its own known
+      const wchar_t *tu_file; // nullptr: the same (its code is checked at the first load)
+      bool not_supported = false; // a known disc whose code PDZ Restored can't run: refused before anything is copied
     };
     constexpr Pressing kPressings[] = {
         {0x6A78E206, "0.0.0.4", "c24ae39fb18a22de1f18e61dc498393d25eadcaf", "b148ab898498a4dbdd494ddaf0e7d826612a6126",
@@ -93,7 +110,18 @@ namespace pdz::first_run
          L"TU_16L61UJ_0000004000000.00000000000O1"},
         {0x509DBB6B, "0.0.0.3", nullptr, "5978a7a0c72f4d9ac18d263d6a647fe1d6f3d9ff", L"TU_16L61UJ_000000C000000.00000000000O3"},
         {0x2B35C136, "0.0.0.2", nullptr, "e43476e35d3ba5b3cfda881c94b60fe0be0f6662", L"TU_16L61UJ_0000008000000.00000000000O2"},
+        // The US "Platinum Hits" reprint (7 Nov 2026, a dump of a real disc; docs/RELEASE_FIRST_RUN.md "The US
+        // Platinum Hits"): known, NOT supported. Its own code is a full-size image like TU3's (SHA-1 e3048eb7...) but
+        // a different build (linked 12 Sep 2006, TU3's 19 Sep; the code moved from 8214030E on), and TU3's patch
+        // can't be applied to it (the SDK's patcher crashed). The map packs are merged into its game files.
+        {0x40C97944, "0.0.0.15", "29470e582ff8497f7465d475ed9b819389c83f12", nullptr, nullptr, true},
     };
+    // The message for a disc whose game code PDZ Restored can't run (setup's log path follows on its own line).
+    constexpr const wchar_t *kNotSupported = L"This version of the game is not supported.";
+    // setup.json's image_check after TU3 was added at the first load, and once the restart's image check passed. A
+    // stamp still at kTu3Added at a normal start means the restart never reached the check (Prepare sets it aside).
+    constexpr const char *kTu3Added = "with Title Update 3 (added at the first load)";
+    constexpr const char *kTu3Checked = "with Title Update 3 (added at the first load, checked)";
     // SHA-1 of the loaded executable image (0x82000000, 0x13E0000 bytes) the build's code is recompiled from.
     constexpr const char *kImageSha1 = "4e57d5890f8b00803aa707a7453fbd14127ebd50";
     constexpr uint32_t kTitleId = 0x4D5307D3;
@@ -116,6 +144,23 @@ namespace pdz::first_run
     }
 
     std::wstring Widen(const std::string &s) { return fs::path(s).wstring(); }
+
+    // setup.log is copied to logs\setup.log next to PDZRestored.exe (easy to find); messages name that copy.
+    fs::path LogCopyPath() { return rex::filesystem::GetExecutableFolder() / "logs" / "setup.log"; }
+    void CopyTraceToLogs()
+    {
+      if (g_trace_file.empty())
+      {
+        return;
+      }
+      std::error_code ec;
+      fs::create_directories(LogCopyPath().parent_path(), ec);
+      fs::copy_file(g_trace_file, LogCopyPath(), fs::copy_options::overwrite_existing, ec);
+    }
+    std::wstring LogWhere()
+    {
+      return L"\n\nYour setup log is here: " + LogCopyPath().wstring() + L" (and " + g_trace_file.wstring() + L").";
+    }
     FILE *OpenFile(const wchar_t *path, const wchar_t *mode)
     {
       FILE *f = nullptr;
@@ -322,6 +367,33 @@ namespace pdz::first_run
         file->Destroy();
         return ok ? std::optional<std::vector<uint8_t>>(std::move(data)) : std::nullopt;
       }
+      // The first `n` bytes of an item (a package's header).
+      std::vector<uint8_t> ReadHead(const Item &item, size_t n) const
+      {
+        n = size_t(std::min<uint64_t>(n, item.size));
+        std::vector<uint8_t> data(n);
+        if (!item.entry)
+        {
+          FILE *f = OpenFile(item.host.wstring().c_str(), L"rb");
+          const size_t got = f ? std::fread(data.data(), 1, n, f) : 0;
+          if (f)
+          {
+            std::fclose(f);
+          }
+          data.resize(got);
+          return data;
+        }
+        rex::filesystem::File *file = nullptr;
+        if (item.entry->Open(rex::filesystem::FileAccess::kFileReadData, &file) != 0 || !file)
+        {
+          return {};
+        }
+        size_t got = 0;
+        file->ReadSync(std::span<uint8_t>(data.data(), data.size()), 0, &got);
+        file->Destroy();
+        data.resize(got);
+        return data;
+      }
       // Copies an item to a host file, in chunks, adding to `done` (bytes). False on an error or a cancel.
       bool Copy(const Item &item, const fs::path &to, std::atomic<uint64_t> &done, const std::atomic<bool> &cancel,
                 std::string &error) const
@@ -525,7 +597,8 @@ namespace pdz::first_run
       std::wstring out;
       for (const Pressing &p : kPressings)
       {
-        out += fmt::format(L"  media ID {:08X} (version {}), with {}\n", p.media_id, Widen(p.version), p.tu_file);
+        out += fmt::format(L"  media ID {:08X} (version {}), with {}\n", p.media_id, Widen(p.version),
+                           p.tu_file ? p.tu_file : L"(no title update of its own known)");
       }
       return out;
     }
@@ -551,10 +624,10 @@ namespace pdz::first_run
       return fs::exists(update_root / "Pdz" / "Assets" / "PackageData" / "1726605008.pkg", ec);
     }
 
-    bool Usable(const Paths &p)
+    bool Usable(const Paths &p, bool need_xexp = true)
     {
       std::error_code ec;
-      return fs::exists(p.game_root / "default.xex", ec) && fs::exists(p.game_root / "default.xexp", ec) &&
+      return fs::exists(p.game_root / "default.xex", ec) && (!need_xexp || fs::exists(p.game_root / "default.xexp", ec)) &&
              PackageThere(p.update_root);
     }
 
@@ -583,12 +656,13 @@ namespace pdz::first_run
       const std::string json(stamp->begin(), stamp->end());
       const auto xex = ReadHostFile(data_dir / "game" / "default.xex");
       const auto xexp = ReadHostFile(data_dir / "game" / "default.xexp");
-      if (!xex || !xexp || !PackageThere(data_dir / "update"))
+      const std::string want_xexp = StampField(json, "xexp_sha1"); // empty: the disc's own code, no title update
+      if (!xex || (!want_xexp.empty() && !xexp) || !PackageThere(data_dir / "update"))
       {
         why = "prepared files missing";
         return false;
       }
-      if (StampField(json, "xex_sha1") != Sha1Of(*xex) || StampField(json, "xexp_sha1") != Sha1Of(*xexp) ||
+      if (StampField(json, "xex_sha1") != Sha1Of(*xex) || (!want_xexp.empty() && want_xexp != Sha1Of(*xexp)) ||
           StampField(json, "setup_version") != std::to_string(kStampVersion))
       {
         why = "the files changed since setup";
@@ -597,11 +671,14 @@ namespace pdz::first_run
       return true;
     }
 
-    [[noreturn]] void Fail(const std::wstring &text)
+    [[noreturn]] void Fail(const std::wstring &text_in)
     {
+      const std::wstring text = text_in + LogWhere();
       Trace("stopped: " + fs::path(text).string());
+      CopyTraceToLogs();
       const int shown = REXCVAR_GET(pdz_setup_quiet) ? -1 : setup_ui::Error(kTitle, text);
       Trace("message box result " + std::to_string(shown) + " (last error " + std::to_string(GetLastError()) + ")");
+      CopyTraceToLogs();
       std::exit(2);
     }
 
@@ -615,7 +692,31 @@ namespace pdz::first_run
     std::wstring Mb(uint64_t bytes) { return fmt::format(L"{:.1f} GB", double(bytes) / (1024.0 * 1024.0 * 1024.0)); }
 
     // The whole setup: find, check, extract, stamp. Exits on a problem the player must fix.
-    Paths RunSetup(const fs::path &exe_dir, const fs::path &data_dir, const std::string &reason)
+    // The top-level names of the known discs (the original US disc's ISO and the extracted 750FF1D9 / 41EEAFCB
+    // discs): anything else at the top of a disc is logged by name and size.
+    bool KnownTopLevel(const std::string &name)
+    {
+      static const char *kNames[] = {"default.xex", "fonts", "pdz", "savethumbnail.png", "xetvconfig.ini",
+                                     "$systemupdate", "nxeart", "avatarawards"};
+      for (const char *n : kNames)
+      {
+        if (_stricmp(name.c_str(), n) == 0)
+        {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // An Xbox 360 content package (STFS: CON / LIVE / PIRS) inside a disc: its content type and title.
+    struct DiscPackage
+    {
+      const Item *item = nullptr;
+      uint32_t content_type = 0, title_id = 0;
+    };
+
+    Paths RunSetup(const fs::path &exe_dir, const fs::path &data_dir, const fs::path &user_data_root,
+                   const std::string &reason)
     {
       const auto t0 = std::chrono::steady_clock::now();
       // 1. Find the disc and the title update.
@@ -666,11 +767,19 @@ namespace pdz::first_run
       }
       const std::string xex_sha1 = Sha1Of(*xex);
       Trace("default.xex SHA-1 " + xex_sha1);
-      const XexId id = ReadXexId(*xex);
+      XexId id = ReadXexId(*xex);
+      const std::string test_media = REXCVAR_GET(pdz_setup_test_media_id);
+      if (!test_media.empty() && id.ok)
+      {
+        id.media_id = uint32_t(std::strtoul(test_media.c_str(), nullptr, 16));
+        Trace(fmt::format("TESTING (pdz_setup_test_media_id): the disc is treated as media ID {:08X}, not matched by "
+                          "its SHA-1",
+                          id.media_id));
+      }
       const Pressing *pressing = nullptr;
       for (const Pressing &p : kPressings)
       {
-        const bool by_hash = p.xex_sha1 && xex_sha1 == p.xex_sha1;
+        const bool by_hash = test_media.empty() && p.xex_sha1 && xex_sha1 == p.xex_sha1;
         const bool by_header = !p.xex_sha1 && id.ok && id.title_id == kTitleId && id.media_id == p.media_id &&
                                VersionText(id.version) == p.version;
         if (by_hash || by_header)
@@ -678,27 +787,146 @@ namespace pdz::first_run
           pressing = &p;
         }
       }
+      if (!id.ok || id.title_id != kTitleId)
+      {
+        Trace(fmt::format("not Perfect Dark Zero: {}: header {}, title {:08X}, media ID {:08X}, version {}, default.xex "
+                          "SHA-1 {}",
+                          disc_path.string(), id.ok ? "read" : "not a valid XEX2 header", id.title_id, id.media_id,
+                          VersionText(id.version), xex_sha1));
+        Fail(L"This disc isn't Perfect Dark Zero, or it has been changed. Use a Perfect Dark Zero disc, as it came off "
+             L"the disc.");
+      }
+      // A disc setup doesn't know (or knows only from a player's report, with no title update of its own): its own
+      // code is checked at the first load (VerifyImage), before any title update is applied.
+      const bool check_at_load = !pressing || !pressing->tu_file;
       if (!pressing)
       {
-        Trace(fmt::format("unknown disc {}: title {:08X}, media ID {:08X}, version {}, default.xex SHA-1 {}",
-                          disc_path.string(), id.title_id, id.media_id, VersionText(id.version), xex_sha1));
-        Fail(id.ok && id.title_id == kTitleId
-                 ? std::wstring(L"This is Perfect Dark Zero, but not a disc PDZ Restored knows. Use one of the five "
-                                L"retail discs, as it came off the disc.")
-                 : std::wstring(L"This disc isn't Perfect Dark Zero, or it has been changed. Use one of the five retail "
-                                L"Perfect Dark Zero discs."));
+        Trace(fmt::format("UNKNOWN DISC, accepted by its header: title {:08X}, media ID {:08X}, version {}, "
+                          "default.xex SHA-1 {} ({})",
+                          id.title_id, id.media_id, VersionText(id.version), xex_sha1, disc_path.string()));
       }
-      Trace(fmt::format("disc: media ID {:08X}, version {}{}", pressing->media_id, pressing->version,
-                        pressing->xex_sha1 ? "" : " (by its header; the image is checked at load)"));
-      const wchar_t *kTuFile = pressing->tu_file;
+      else if (pressing->not_supported)
+      {
+        // Known, and known not to run: stopped before anything is copied (no title update is added to it).
+        Trace(fmt::format("disc: media ID {:08X}, version {}, default.xex SHA-1 {}: a known disc that PDZ Restored "
+                          "doesn't support (its game code is a different build from the one PDZ Restored is made "
+                          "from; Title Update 3 can't be applied to it)",
+                          pressing->media_id, pressing->version, xex_sha1));
+        Fail(kNotSupported);
+      }
+      else
+      {
+        Trace(fmt::format("disc: media ID {:08X}, version {}{}", pressing->media_id, pressing->version,
+                          !pressing->tu_file  ? " (known only from a player's report, not verified)"
+                          : pressing->xex_sha1 ? ""
+                                               : " (by its header; the image is checked at load)"));
+      }
+      Trace(check_at_load ? std::string("its own code is checked at the first load, before any title update: the same "
+                                        "as the code PDZ Restored is built from = no title update needed")
+                          : std::string("a known disc: its own code needs Title Update 3 (checked for 6A78E206, 750FF1D9 "
+                                        "and 41EEAFCB on 3 Nov 2026)"));
+      const uint32_t media_id = pressing ? pressing->media_id : id.media_id;
+      const std::string version_text = pressing ? std::string(pressing->version) : VersionText(id.version);
+
+      // What the disc has that the known discs don't: top-level names (with sizes) and content packages.
+      {
+        std::vector<std::pair<std::string, std::pair<uint64_t, size_t>>> tops; // name -> bytes, files
+        for (const Item &i : disc.items)
+        {
+          const std::string top = i.rel.substr(0, i.rel.find('\\'));
+          auto it = std::find_if(tops.begin(), tops.end(), [&](const auto &t) { return _stricmp(t.first.c_str(), top.c_str()) == 0; });
+          if (it == tops.end())
+          {
+            tops.push_back({top, {0, 0}});
+            it = tops.end() - 1;
+          }
+          it->second.first += i.size;
+          ++it->second.second;
+        }
+        std::string all;
+        for (const auto &t : tops)
+        {
+          all += fmt::format("{}{} ({} files, {} bytes)", all.empty() ? "" : ", ", t.first, t.second.second,
+                             t.second.first);
+          if (!KnownTopLevel(t.first))
+          {
+            Trace(fmt::format("disc extra (not on the known discs): top-level '{}': {} files, {} bytes", t.first,
+                              t.second.second, t.second.first));
+          }
+        }
+        Trace("disc top level: " + all);
+      }
+      std::vector<DiscPackage> packages;
+      for (const Item &i : disc.items)
+      {
+        if (i.size < 0x1000)
+        {
+          continue;
+        }
+        const std::vector<uint8_t> head = disc.ReadHead(i, 0x400);
+        if (head.size() < 0x364 || (std::memcmp(head.data(), "CON ", 4) != 0 && std::memcmp(head.data(), "LIVE", 4) != 0 &&
+                                    std::memcmp(head.data(), "PIRS", 4) != 0))
+        {
+          continue;
+        }
+        DiscPackage pk;
+        pk.item = &i;
+        pk.content_type = Be32(head, 0x344);
+        pk.title_id = Be32(head, 0x360);
+        packages.push_back(pk);
+        Trace(fmt::format("disc package: {} ({} bytes, {}, content type {:08X}{}, title {:08X})", i.rel, i.size,
+                          std::string(reinterpret_cast<const char *>(head.data()), 4), pk.content_type,
+                          pk.content_type == 0x000B0000   ? " = a title update"
+                          : pk.content_type == 0x00000002 ? " = downloadable content (a map pack?)"
+                                                          : "",
+                          pk.title_id));
+      }
+      if (packages.empty())
+      {
+        Trace("disc packages: none (no CON / LIVE / PIRS package on the disc)");
+      }
+
+      // A title update the disc carries itself (a package of content type 000B0000 for this title, or a TU_ file):
+      // extracted next to the prepared files and preferred over the game folder's.
+      std::vector<fs::path> disc_tus;
+      for (const Item &i : disc.items)
+      {
+        const DiscPackage *pk = nullptr;
+        for (const DiscPackage &d : packages)
+        {
+          pk = d.item == &i ? &d : pk;
+        }
+        const bool tu_package = pk && pk->content_type == 0x000B0000 && pk->title_id == kTitleId;
+        if (!tu_package && !(pk && IsTuPackage(fs::path(i.rel))))
+        {
+          continue;
+        }
+        const fs::path to = data_dir / "disc_tu" / fs::path(i.rel).filename();
+        std::atomic<uint64_t> done{0};
+        std::atomic<bool> cancel{false};
+        std::string error;
+        if (disc.Copy(i, to, done, cancel, error))
+        {
+          Trace("the disc's own title update: " + i.rel + " -> " + to.string());
+          disc_tus.push_back(to);
+        }
+        else
+        {
+          Trace("the disc's own title update " + i.rel + " couldn't be extracted: " + error);
+        }
+      }
+      tus.insert(tus.begin(), disc_tus.begin(), disc_tus.end());
+      const wchar_t *kTuFile = pressing ? pressing->tu_file : nullptr;
       int best_rank = -1;
       for (const fs::path &t : tus)
       {
-        // The one named for this disc, then another disc's TU3 (any works), then whatever else is there.
-        int rank = NameIs(t, kTuFile) ? 2 : 0;
+        // The disc's own, then the one named for this disc, then another disc's TU3 (any works), then whatever else.
+        int rank = std::find(disc_tus.begin(), disc_tus.end(), t) != disc_tus.end() ? 3
+                   : kTuFile && NameIs(t, kTuFile)                                ? 2
+                                                                                  : 0;
         for (const Pressing &p : kPressings)
         {
-          rank = std::max(rank, NameIs(t, p.tu_file) ? 1 : 0);
+          rank = std::max(rank, p.tu_file && NameIs(t, p.tu_file) ? 1 : 0);
         }
         if (rank > best_rank)
         {
@@ -706,7 +934,24 @@ namespace pdz::first_run
           tu_path = t;
         }
       }
-      if (tu_path.empty())
+      // Title Update 3's data package (the file TU3's code reads at boot) on the disc itself: then a disc whose own code
+      // turns out to need no title update can do without one.
+      const Item *disc_tu_data = nullptr;
+      for (const Item &i : disc.items)
+      {
+        if (_stricmp(fs::path(i.rel).filename().string().c_str(), "1726605008.pkg") == 0)
+        {
+          disc_tu_data = &i;
+          Trace("the disc has Title Update 3's data package itself: " + i.rel + " (" + std::to_string(i.size) +
+                " bytes)");
+        }
+      }
+      if (tu_path.empty() && check_at_load && disc_tu_data)
+      {
+        Trace("no title update found: going on without one (the disc has TU3's data package; its own code is checked "
+              "at the first load)");
+      }
+      else if (tu_path.empty())
       {
         if (!Ask(L"Now pick Title Update 3, copied from your own Xbox 360. Any disc's Title Update 3 works: its file "
                  L"name usually starts with TU_16L61UJ_. You can also pick the default.xexp of an extracted one."))
@@ -722,7 +967,17 @@ namespace pdz::first_run
       }
 
 
-      std::string tu_kind;
+      std::string tu_kind = "none";
+      const Item *xexp_item = nullptr;
+      std::optional<std::vector<uint8_t>> xexp;
+      std::string xexp_sha1;
+      const Pressing *tu_of = nullptr; // the disc this TU3 was made for (any of them works)
+      if (tu_path.empty())
+      {
+        Trace("no title update");
+      }
+      else
+      {
       if (NameIs(tu_path, L"default.xexp"))
       {
         tu.OpenFolder(tu_path.parent_path());
@@ -748,13 +1003,12 @@ namespace pdz::first_run
              L"own Xbox 360, or the default.xexp of an extracted one.");
       }
       Trace("title update opened (" + tu_kind + "): " + std::to_string(tu.items.size()) + " files");
-      const Item *xexp_item = tu.Find("default.xexp");
-      const auto xexp = xexp_item ? tu.Read(*xexp_item) : std::nullopt;
-      const std::string xexp_sha1 = xexp ? Sha1Of(*xexp) : std::string();
-      const Pressing *tu_of = nullptr; // the disc this TU3 was made for (any of the five works)
+      xexp_item = tu.Find("default.xexp");
+      xexp = xexp_item ? tu.Read(*xexp_item) : std::nullopt;
+      xexp_sha1 = xexp ? Sha1Of(*xexp) : std::string();
       for (const Pressing &p : kPressings)
       {
-        if (xexp_sha1 == p.xexp_sha1)
+        if (p.xexp_sha1 && xexp_sha1 == p.xexp_sha1)
         {
           tu_of = &p;
         }
@@ -779,7 +1033,10 @@ namespace pdz::first_run
       Trace("default.xexp SHA-1 " + xexp_sha1 +
             (tu_of == pressing ? std::string(" (this disc's own Title Update 3)")
                                : fmt::format(" (the Title Update 3 of media ID {:08X}; any TU3 gives the same image)",
-                                             tu_of->media_id)));
+                                             tu_of->media_id)) +
+            (check_at_load ? " - held back in pending\\ until the disc's own code has been checked at the first load"
+                           : ""));
+      } // a title update
 
       // 3. What to copy where. The disc's own system update folder ($SystemUpdate) isn't needed.
       struct Job
@@ -807,9 +1064,39 @@ namespace pdz::first_run
         {
           continue; // an extracted folder: only default.xexp and Pdz\...
         }
-        jobs.push_back({&tu, &i, xexp_file ? data_dir / "game" / "default.xexp" : data_dir / "update" / i.rel});
+        jobs.push_back({&tu, &i,
+                        xexp_file ? data_dir / (check_at_load ? "pending" : "game") / "default.xexp"
+                                  : data_dir / "update" / i.rel});
         total += i.size;
         update_files += xexp_file ? 0 : 1;
+      }
+      if (tu_path.empty() && disc_tu_data)
+      {
+        jobs.push_back({&disc, disc_tu_data, data_dir / "update" / "Pdz" / "Assets" / "PackageData" / "1726605008.pkg"});
+        total += disc_tu_data->size;
+        update_files = 1;
+      }
+      // Map packs on the disc (downloadable-content packages for this title): installed after the copy, as packs
+      // copied from a console are (map_packs.h). Those in a $ folder aren't copied with the disc's files, so they go
+      // to disc_content\.
+      std::vector<fs::path> disc_packs;
+      for (const DiscPackage &pk : packages)
+      {
+        if (pk.content_type != 0x00000002 || pk.title_id != kTitleId)
+        {
+          continue;
+        }
+        if (pk.item->rel.rfind("$", 0) == 0)
+        {
+          const fs::path to = data_dir / "disc_content" / fs::path(pk.item->rel).filename();
+          jobs.push_back({&disc, pk.item, to});
+          total += pk.item->size;
+          disc_packs.push_back(to);
+        }
+        else
+        {
+          disc_packs.push_back(data_dir / "game" / pk.item->rel);
+        }
       }
       ULARGE_INTEGER free_bytes{};
       std::error_code ec;
@@ -824,6 +1111,9 @@ namespace pdz::first_run
 
       // 4. Extract, with progress.
       fs::remove(data_dir / "setup.json", ec); // a stamp only after everything is in place
+      // An earlier setup's default.xexp must not stay: a disc checked at the first load is loaded without one.
+      fs::remove(data_dir / "game" / "default.xexp", ec);
+      fs::remove(data_dir / "pending" / "default.xexp", ec);
       Trace("extracting " + std::to_string(jobs.size()) + " files, " + std::to_string(total) + " bytes into " +
             data_dir.string());
       setup_ui::State state;
@@ -871,7 +1161,14 @@ namespace pdz::first_run
                                                  L"then start again. The details are in the setup log."));
       }
       Paths out{data_dir / "game", data_dir / "update"};
-      if (!Usable(out))
+      for (const fs::path &pack : disc_packs)
+      {
+        int index = -1;
+        std::string log;
+        const bool ok = map_packs::Install(pack, map_packs::TitleRoot(user_data_root), index, log);
+        Trace(fmt::format("map pack from the disc: {}: {} ({})", pack.string(), ok ? "installed" : "not installed", log));
+      }
+      if (!Usable(out, !check_at_load))
       {
         Trace("the Title Update 3 data package is missing from " + tu_path.string());
         Fail(L"Setup finished, but your Title Update 3 is missing its data package. Pick your complete Title Update 3 "
@@ -884,8 +1181,11 @@ namespace pdz::first_run
       stamp << "{\n"
             << "  \"setup_version\": \"" << kStampVersion << "\",\n"
             << "  \"xex_sha1\": \"" << xex_sha1 << "\",\n"
-            << "  \"xexp_sha1\": \"" << xexp_sha1 << "\",\n"
-            << "  \"media_id\": \"" << fmt::format("{:08X}", pressing->media_id) << "\",\n"
+            << "  \"xexp_sha1\": \"" << (check_at_load ? std::string() : xexp_sha1) << "\",\n"
+            << "  \"pending_xexp_sha1\": \"" << (check_at_load ? xexp_sha1 : std::string()) << "\",\n"
+            << "  \"image_check\": \"" << (check_at_load ? "pending" : "known disc") << "\",\n"
+            << "  \"media_id\": \"" << fmt::format("{:08X}", media_id) << "\",\n"
+            << "  \"version\": \"" << version_text << "\",\n"
             << "  \"disc\": \"" << disc_path.generic_string() << "\",\n"
             << "  \"title_update\": \"" << tu_path.generic_string() << "\",\n"
             << "  \"files\": \"" << jobs.size() << "\",\n"
@@ -895,6 +1195,7 @@ namespace pdz::first_run
             << "}\n";
       stamp.close();
       Trace(fmt::format("done in {:.1f} s", secs));
+      CopyTraceToLogs();
       g_summary = fmt::format("pdz_setup: first-run setup ({}): disc {} ({}), title update {} ({}): {} files, {:.2f} GB "
                               "into {} in {:.1f} s ({} hard-linked, the rest copied)",
                               reason, disc_path.string(), disc.disc ? "disc image" : "extracted folder", tu_path.string(),
@@ -925,7 +1226,8 @@ namespace pdz::first_run
                               current.game_root.string(), current.update_root.string());
       return current;
     }
-    const bool force = mode == "force";
+    // Setup's own restart (after adding TU3 at the first load) never runs setup again, even under pdz_setup=force.
+    const bool force = mode == "force" && !REXCVAR_GET(pdz_setup_restarted);
     if (!force && Usable(current))
     {
       g_summary = fmt::format("pdz_setup: game files found (game {}, update {}): no setup needed",
@@ -937,40 +1239,166 @@ namespace pdz::first_run
                               : Writable(exe_dir / "data") ? exe_dir / "data"
                                                            : user_data_root / "data";
     std::string why;
-    if (!force && StampValid(data_dir, why))
+    std::error_code ec;
+    // A setup.json from a start that added TU3 to a disc's own code and restarted, where the restart never reached its
+    // image check (0.9.2.1 part 1: the patcher crashed on the US Platinum Hits): set aside, so setup runs again and
+    // stops with its message instead of crashing at every start.
+    if (!REXCVAR_GET(pdz_setup_restarted))
+    {
+      const auto old = ReadHostFile(data_dir / "setup.json");
+      if (old && StampField(std::string(old->begin(), old->end()), "image_check") == kTu3Added)
+      {
+        g_trace_file = data_dir / "setup.log";
+        fs::rename(data_dir / "setup.json", data_dir / "setup.json.rejected", ec);
+        Trace("setup.json says Title Update 3 was added at the first load, but the restart never reached its image "
+              "check (it stopped or crashed): set aside as setup.json.rejected" +
+              (ec ? " (rename failed: " + ec.message() + ")" : std::string()) + "; setup runs again");
+        why = "the last start stopped before its image check";
+      }
+    }
+    if (!force && why.empty() && StampValid(data_dir, why))
     {
       g_summary = fmt::format("pdz_setup: prepared game files in {} (setup.json checked)", data_dir.string());
       return {data_dir / "game", data_dir / "update"};
     }
-    std::error_code ec;
     fs::create_directories(data_dir, ec);
     g_trace_file = data_dir / "setup.log";
-    return RunSetup(exe_dir, data_dir, force ? std::string("forced, pdz_setup") : why);
+    return RunSetup(exe_dir, data_dir, user_data_root, force ? std::string("forced, pdz_setup") : why);
   }
 
   void VerifyImage(const uint8_t *image, size_t size, const fs::path &game_root)
   {
-    Sha1 h;
-    h.Update(image, size);
-    const std::string got = h.Hex();
-    if (got == kImageSha1)
+    // Only the part of the range that is mapped: a disc's own code without Title Update 3 is a smaller image (TU3's
+    // ends at 833E0000), so the rest of the range isn't there and reading it would fault.
+    size_t mapped = 0;
+    while (mapped < size)
     {
-      REXLOG_INFO("pdz_setup: executable image checked (SHA-1 {}): the one PDZ Restored is made from", got);
+      MEMORY_BASIC_INFORMATION mbi{};
+      if (!VirtualQuery(image + mapped, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+          (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+      {
+        break;
+      }
+      const size_t region_end = size_t(static_cast<const uint8_t *>(mbi.BaseAddress) + mbi.RegionSize - image);
+      mapped = std::min(size, region_end);
+    }
+    Sha1 h;
+    h.Update(image, mapped);
+    const std::string got = h.Hex() + (mapped < size ? fmt::format(" (only 0x{:X} of 0x{:X} bytes mapped)", mapped, size)
+                                                       : std::string());
+    const bool test_mismatch = REXCVAR_GET(pdz_setup_test_image_mismatch);
+    const fs::path data_dir = game_root.parent_path();
+    const fs::path stamp_path = data_dir / "setup.json";
+    std::error_code ec;
+    const bool prepared = fs::exists(stamp_path, ec);
+    if (prepared)
+    {
+      g_trace_file = data_dir / "setup.log"; // this start's lines go to setup's own log too
+    }
+    const auto stamp_bytes = prepared ? ReadHostFile(stamp_path) : std::nullopt;
+    std::string stamp = stamp_bytes ? std::string(stamp_bytes->begin(), stamp_bytes->end()) : std::string();
+    const std::string image_check = StampField(stamp, "image_check");
+    const bool has_xexp = fs::exists(game_root / "default.xexp", ec);
+    if (image_check == "pending" && has_xexp)
+    {
+      Trace("the disc's own code was to be checked, but a default.xexp is in " + game_root.string() +
+            " (not from this setup): this check is of the code with it");
+    }
+    const auto set_field = [&](const std::string &key, const std::string &value) {
+      const std::string k = "\"" + key + "\": \"";
+      const size_t at = stamp.find(k);
+      if (at == std::string::npos)
+      {
+        return;
+      }
+      const size_t end = stamp.find('"', at + k.size());
+      stamp.replace(at + k.size(), end - at - k.size(), value);
+    };
+    const auto write_stamp = [&] { std::ofstream(stamp_path, std::ios::binary | std::ios::trunc) << stamp; };
+    Trace(fmt::format("image check at load: SHA-1 {} ({}; expected {}){}", got,
+                      has_xexp ? "with Title Update 3's default.xexp" : "the disc's own code, no title update",
+                      kImageSha1, test_mismatch ? " - TESTING: reported as a mismatch (pdz_setup_test_image_mismatch)"
+                                                : ""));
+    if (mapped == size && got == kImageSha1 && !test_mismatch)
+    {
+      REXLOG_INFO("pdz_setup: executable image checked (SHA-1 {}): the one PDZ Restored is made from{}", got,
+                  has_xexp ? "" : " (the disc's own code: no title update needed)");
+      if (image_check == "pending")
+      {
+        set_field("image_check", "the disc's own code matches: no title update needed");
+        write_stamp();
+        Trace("the disc's own code is the one PDZ Restored is built from: no title update needed (none is used)");
+      }
+      else if (image_check == kTu3Added)
+      {
+        // Recorded, so a start that finds kTu3Added still there knows the restart never got this far (Prepare).
+        set_field("image_check", kTu3Checked);
+        write_stamp();
+        Trace("final image with Title Update 3: the one PDZ Restored is built from");
+      }
+      CopyTraceToLogs();
       return;
+    }
+    // A disc setup didn't know, whose own code is a full-size image like TU3's but not the build's: an updated build of
+    // the game, not the original code TU3's patch is made for (the US Platinum Hits: the SDK's patcher crashed on it).
+    // No title update is added; it stops below with the message.
+    const bool wrong_build = image_check == "pending" && !has_xexp && mapped == size;
+    if (wrong_build)
+    {
+      Trace("the disc's own code is SHA-1 " + got + ": a full-size image like Title Update 3's, but not the one PDZ "
+            "Restored is built from (a different build of the game): Title Update 3 can't be applied to it, so none is "
+            "added");
+    }
+    // A disc setup didn't know: its own code (the original, smaller image) isn't the build's, so Title Update 3's
+    // default.xexp (held back in pending\) is added and PDZ Restored starts again once.
+    const fs::path pending = data_dir / "pending" / "default.xexp";
+    if (image_check == "pending" && !has_xexp && !wrong_build && fs::exists(pending, ec) && !test_mismatch)
+    {
+      Trace("the disc's own code is SHA-1 " + got + ", not the one PDZ Restored is built from: adding Title Update 3 "
+            "(its default.xexp from pending\\) and starting again");
+      fs::rename(pending, game_root / "default.xexp", ec);
+      if (ec)
+      {
+        fs::copy_file(pending, game_root / "default.xexp", fs::copy_options::overwrite_existing, ec);
+      }
+      set_field("xexp_sha1", StampField(stamp, "pending_xexp_sha1"));
+      set_field("image_check", kTu3Added);
+      write_stamp();
+      CopyTraceToLogs();
+      REXLOG_INFO("pdz_setup: the disc's own code (SHA-1 {}) needs Title Update 3: added, PDZ Restored starts again",
+                  got);
+      rex::FlushLogging();
+      std::wstring cmd = std::wstring(GetCommandLineW()) + L" --pdz_setup_restarted=true";
+      STARTUPINFOW si{};
+      si.cb = sizeof(si);
+      PROCESS_INFORMATION pi{};
+      wchar_t exe[MAX_PATH] = {};
+      GetModuleFileNameW(nullptr, exe, MAX_PATH);
+      if (CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+      {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        std::exit(0);
+      }
+      Trace("starting again failed (error " + std::to_string(GetLastError()) + "): start PDZ Restored again by hand");
     }
     REXLOG_ERROR("pdz_setup: the loaded executable image is not the one PDZ Restored is made from (SHA-1 {}, expected "
                  "{}; game files {})",
                  got, kImageSha1, game_root.string());
+    const std::string media = StampField(stamp, "media_id"), version = StampField(stamp, "version");
+    Trace("final image doesn't match: SHA-1 " + got + ", expected " + kImageSha1 + " (media ID " + media + ", version " +
+          version + (has_xexp ? ", with Title Update 3" : ", the disc's own code") + ")");
     // A prepared folder with this result is not used again: setup runs again at the next start.
-    std::error_code ec;
-    if (fs::exists(game_root.parent_path() / "setup.json", ec) && fs::exists(game_root.parent_path() / "update", ec))
+    if (prepared && fs::exists(data_dir / "update", ec))
     {
-      fs::rename(game_root.parent_path() / "setup.json", game_root.parent_path() / "setup.json.rejected", ec);
+      fs::rename(stamp_path, data_dir / "setup.json.rejected", ec);
     }
+    const std::wstring text = std::wstring(kNotSupported) + (g_trace_file.empty() ? std::wstring() : LogWhere());
+    Trace("stopped: " + fs::path(text).string());
+    CopyTraceToLogs();
     if (!REXCVAR_GET(pdz_setup_quiet))
     {
-      setup_ui::Error(kTitle, L"This disc and title update don't make the game PDZ Restored was built from, so it can't "
-                              L"run. Use a retail Perfect Dark Zero disc with Title Update 3.");
+      setup_ui::Error(kTitle, text);
     }
     std::exit(2);
   }

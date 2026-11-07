@@ -27,8 +27,10 @@ namespace pdz::first_run
   Paths Prepare(const std::filesystem::path &exe_dir, const std::filesystem::path &user_data_root, const Paths &current,
                 bool explicit_paths);
 
-  // At load (OnPostLoadXexImage): the patched executable image must be the one the build is recompiled from (any
-  // supported pressing with its own TU3 gives it). Otherwise a message, the prepared stamp set aside, exit 2.
+  // At load (OnPostLoadXexImage): the executable image must be the one the build is recompiled from (any supported
+  // pressing with its own TU3 gives it). For a disc setup didn't know, the first load checks the disc's own code: a
+  // match needs no title update; otherwise TU3's default.xexp (held back by setup) is added and the exe starts again
+  // once. A final mismatch: a message with the setup log's path, the prepared stamp set aside, exit 2.
   void VerifyImage(const uint8_t *image, size_t size, const std::filesystem::path &game_root);
 
   // After logging starts: what setup found or did (one or two lines).

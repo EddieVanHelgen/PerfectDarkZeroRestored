@@ -496,3 +496,76 @@ patcher (`XexModule::ApplyPatch`), and the image was written with `pdz_test_dump
 - **Refusal:** a disc `default.xex` offered as the title update stops setup before copying anything: "PDZ Restored
   needs Perfect Dark Zero Title Update 3 ... It is version 0.0.0.1 for media ID 41EEAFCB, not a known Title
   Update 3". No TU1 / TU2 file was at hand to try.
+
+## Discs setup doesn't know (0.9.2.1)
+
+A player's genuine US "Platinum Hits" reprint (media ID 40C97944, version 0.0.0.15, `default.xex` SHA-1
+29470e58...; 1,415 files, said to carry the title update and both map packs) was refused as "not a disc PDZ Restored
+knows". Since 0.9.2.1:
+
+- **Any `default.xex` with a valid XEX2 header and title ID 4D5307D3 is accepted.** One that isn't in `kPressings`,
+  or is listed without a TU3 of its own, is logged as
+  `UNKNOWN DISC, accepted by its header` with its media ID, version and SHA-1.
+- **Its own code is checked first, by the real loader.** Setup copies the disc and Title Update 3's data files, but
+  holds TU3's `default.xexp` back in `data\pending\`. At the first load `VerifyImage` hashes the disc's own code:
+  - the same as `kImageSha1`: no title update is needed and none is used (`setup.json`: `image_check` "the disc's
+    own code matches");
+  - different: the `default.xexp` is moved into `data\game\`, PDZ Restored starts itself again once
+    (`--pdz_setup_restarted`, the settings window isn't shown again), and the final code is checked;
+  - a full-size image like TU3's (0x13E0000 bytes mapped) that isn't `kImageSha1`: a different build of the game, not
+    the original code TU3's patch is made for. No title update is added; it stops at once with the message below;
+  - the final code different: "This version of the game is not supported.", with the path of the setup log on its
+    own line (the same message for every disc whose code doesn't match).
+  - A `setup.json` still at `image_check` "with Title Update 3 (added at the first load)" at a normal start means the
+    restart never reached its image check (it crashed or stopped): `Prepare` sets it aside as `setup.json.rejected` and
+    setup runs again. The restart's passing check records "... (added at the first load, checked)".
+  - Setup doesn't compute the image itself: the loaded image is the loader's result (imports included), and a disc's
+    own code can be a smaller image (the original US disc's ends at 833D0000, TU3's at 833E0000; the hash covers only
+    the mapped part).
+- **Known discs** go as before (their own code needs TU3: checked for 6A78E206, 750FF1D9 and 41EEAFCB on 3 Nov).
+- **The title update:** a TU3 the disc carries itself (an STFS package of content type 000B0000 for this title, or a
+  `TU_` package) is extracted to `data\disc_tu\` and preferred; then the game folder's, the one named for the disc
+  first. With none, a disc checked at load that has TU3's data package (`1726605008.pkg`) itself goes on without
+  one; otherwise setup asks for Title Update 3 as before.
+- **What a disc has that the known discs don't** is logged: every top-level name with its file count and size (and a
+  `disc extra` line for names the known discs don't have), and every content package (CON / LIVE / PIRS) with its
+  content type and title.
+- **Map packs on a disc:** downloadable-content packages (content type 00000002) for this title are installed after
+  the copy with `map_packs::Install`, the same as packs copied from a console (a pack in a `$` folder is copied to
+  `data\disc_content\` first). Packs merged into the game's own packages instead would show only as the top-level /
+  size lines; that needs the real disc (not tested: no such disc here).
+- **setup.log** is copied to `logs\setup.log` next to `PDZRestored.exe` whenever setup ends or stops, and every
+  setup message ends with both paths.
+- **Test tools (off):** `pdz_setup_test_media_id` (a known disc goes the unknown way, not matched by its SHA-1) and
+  `pdz_setup_test_image_mismatch` (the check at load reports a mismatch).
+
+**Tested** (a test folder, the US ISO media ID 41EEAFCB with the 6A78E206 TU3 package, `--pdz_setup_quiet`):
+the known disc as before (24.7 s, image matched, 1,342 frames); `pdz_setup_test_media_id=40C97944`: accepted by its
+header, its own code (0x13D0000 bytes mapped, SHA-1 82b910c3...) didn't match, TU3 added, the restart's final image
+matched, 1,193 frames; `pdz_setup_test_image_mismatch`: the new message with the log path, `setup.json` set aside;
+a fake `default.xex`: refused with both log paths. Not tested (no such disc here): a disc that carries its own title
+update or map packs.
+
+## The US Platinum Hits (0.9.2.1, 7 Nov 2026): known, not supported
+
+A dump of a real US Platinum Hits disc (media ID 40C97944, version 0.0.0.15, `default.xex` SHA-1 29470e58...) was
+tested in its own folder:
+
+- **Its own code** is a full-size image like TU3's (0x13E0000 bytes, SHA-1 e3048eb7...), not `kImageSha1`. It's a
+  different build: the PE timestamp is 12 Sep 2006 (TU3's 19 Sep 2006), and from 8214030E on the code is moved (mostly
+  by 48 bytes; 71 % of the code's words differ). The recompiled code can't run it.
+- **TU3 can't be applied to it:** with a TU3 in `game\`, the first 0.9.2.1 setup added it and restarted, and the SDK's
+  patcher crashed ("XEX patch signature hash doesn't match base XEX signature hash"), at every later start too.
+- **Since then:** 40C97944 is in `kPressings` with `not_supported`, refused before anything is copied: "This version of
+  the game is not supported." plus the setup log path. Any other disc whose own code is full-size but not
+  `kImageSha1` stops at its first load with the same message, and no title update is added. A `setup.json` left by
+  the crashing restart is set aside at the next start.
+- **Its map packs** are merged into its game files (65 files more than the original US disc under `pdzssets\`:
+  59 byte-identical to the official packs and TU3's language files; its own `1726605008.pkg` and `393969562.pkg`; the
+  Rooftops / Trench multiplayer music `music_mlt_roof` / `music_mlt_trn`). No content packages.
+
+**Tested** (`--pdz_setup_quiet`, TU3 copy in `game\` throughout): the crashed folder: set aside, refused, no crash; the
+second start: refused (2 s each). `pdz_setup_test_media_id=12345678` on the same disc: unknown, own code full-size and
+wrong, no TU3 added, the message, no crash, both starts. The US disc (41EEAFCB): known, image matched, played 60 s;
+as unknown (`12345678`): own code 0x13D0000 mapped, TU3 added, restart matched, stamp "... checked"; a plain start
+after it used the prepared files and played 60 s.
