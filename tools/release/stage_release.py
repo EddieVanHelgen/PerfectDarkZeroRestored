@@ -16,8 +16,11 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 
 FROM_BUILD = ["PDZRestored.exe", "rexruntime.dll", "rexgpu-xenos.dll", "dxcompiler.dll", "dxil.dll", "gamecontrollerdb.txt"]
 FROM_GIT = {  # committed versions (a developer's local edits never go into a release)
-    "settings/hardware.toml": "settings/release/hardware.toml",  # the release template, not the developer's own
-    "settings/mapping.toml": "settings/mapping.toml",
+    # The player's settings ship as defaults (0.9.2): the exe copies settings\defaults\<file> to settings\<file> only
+    # when that is missing (utils.h EnsureSettingsFiles), so unzipping a new version over an old folder keeps the
+    # player's own settings and key bindings. settings\hardware.toml / mapping.toml themselves are never in a release.
+    "settings/defaults/hardware.toml": "settings/release/hardware.toml",  # the release template, not the developer's own
+    "settings/defaults/mapping.toml": "settings/mapping.toml",
     "settings/gamecontrollerdb.txt": "settings/gamecontrollerdb.txt",
     "README.md": "tools/release/README.md",  # the players' README (the repo's README.md is for developers)
     "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
@@ -44,6 +47,9 @@ BANNED_EXT = {".xex", ".xexp", ".pkg", ".iso", ".xiso", ".dxil", ".hlsl", ".xsh"
 LAUNCHERS = {"pdz restored settings.bat", "pdzrestored (safe mode).bat"}
 BANNED_NAMES = ("msvcp", "vcruntime", "concrt", "ucrtbase", "api-ms-win", "d3dcompiler", "xinput")
 MICROSOFT_OK = {"dxcompiler.dll", "dxil.dll"}
+# The player's own files (made from settings\defaults\ at the first start): a release that held them would replace a
+# player's settings and key bindings when unzipped over an older version.
+PLAYER_FILES = {os.path.join("settings", "hardware.toml"), os.path.join("settings", "mapping.toml")}
 # Built into PDZRestored.exe (cmake/pdz_xenosrecomp.cmake), not separate files: the committed versions must be in it, and
 # hold only comment lines and hex / decimal fields (hashes, formats, pipeline state: no code of any kind).
 EMBEDDED = ["data/native_bind_list.txt", "data/native_pipeline_list.txt"]
@@ -128,6 +134,8 @@ def main():
                 problems.append("Microsoft runtime file: " + rel)
             if low.endswith((".bat", ".cmd", ".lnk")) and low not in LAUNCHERS:
                 problems.append("a launcher that isn't a release one: " + rel)
+            if rel.lower() in PLAYER_FILES:
+                problems.append("the player's own settings file (it ships as settings\\defaults\\): " + rel)
             if "mymusic" in rel.lower():
                 problems.append("the developer's own music folder: " + rel)
             if re.search(r"users[\\/]|downloads|xbox360", rel.lower()):
@@ -136,7 +144,8 @@ def main():
     with open(os.path.join(out, "RELEASE_CONTENTS.txt"), "w", encoding="ascii", newline="\r\n") as f:
         f.write("PDZ Restored %s release contents (stage_release.py). Microsoft files: only %s (DXC "
                 "redistributables, see THIRD_PARTY_NOTICES.md). No game files, no translated shaders, no Visual C++ "
-                "runtime DLLs, no audio files.\n" % (version, " and ".join(sorted(MICROSOFT_OK))))
+                "runtime DLLs, no audio files. Settings ship as settings\\defaults\\ (the player's own files are made "
+                "from them at the first start and never replaced).\n" % (version, " and ".join(sorted(MICROSOFT_OK))))
         f.write("%-44s %12s  %s\n" % ("file", "bytes", "sha256"))
         for rel, size, h in listed:
             f.write("%-44s %12d  %s\n" % (rel, size, h))

@@ -253,6 +253,9 @@ public:
 
   void OnConfigurePaths(rex::PathConfig &paths) override
   {
+    // 0.9.2: the player's settings\hardware.toml / mapping.toml from settings\defaults\ when missing (a fresh unzip),
+    // before anything reads them; existing ones are never touched (utils.h).
+    settings_files_ = utils::EnsureSettingsFiles();
     // The release name (2026-11-03): a folder set up for the old exe keeps working. The SDK loaded
     // <exe dir>\PDZRestored.toml if there is one; without it, the old perfectdarkzerorecomp.toml is loaded here and
     // the path cvars it sets are applied as the SDK would have.
@@ -456,6 +459,10 @@ public:
     REXLOG_INFO("pdz_build: PDZ Restored {}, built {} from commit {}; settings file {} ({})", PDZ_RESTORED_VERSION,
                 PdzBuildTime(), PdzBuildCommit(), settings.string(),
                 std::filesystem::exists(settings) ? "read" : "MISSING: defaults");
+    for (const std::string &line : settings_files_)
+    {
+      REXLOG_INFO("{}", line);
+    }
     pdz::first_run::LogSummary();
     pdz::settings_ui::LogSummary();
     if (!legacy_config_.empty())
@@ -482,6 +489,7 @@ public:
   }
   std::filesystem::path update_root_; // the title update's data folder (OnConfigurePaths), checked at startup
   std::filesystem::path game_root_, user_root_; // game data / user data roots (the shader generator's inputs)
+  std::vector<std::string> settings_files_; // EnsureSettingsFiles' lines, logged in OnPostInitLogging
   std::filesystem::path legacy_config_; // <exe dir>\perfectdarkzerorecomp.toml when it was read (the old exe name)
   // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
