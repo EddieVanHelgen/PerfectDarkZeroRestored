@@ -72,7 +72,7 @@ No game files are included, and none can be downloaded through PDZ Restored.
 
 ## Status
 
-0.9.1 is an early release. So far it has been tested on one PC (RTX 5090, 4K 120 Hz screen).
+0.9.1 is an early release. So far it has been tested on one PC with NVIDIA GPU.
 
 Reports from other PCs are very welcome, especially with AMD or Intel graphics cards or older processors. Please
 [open an issue](https://github.com/EddieVanHelgen/PerfectDarkZeroRestored/issues) and attach the newest log from
@@ -80,9 +80,9 @@ the `logs` folder next to `PDZRestored.exe`. The settings window's Advanced tab 
 
 Known issues are listed in the release's `README.md` ([tools/release/README.md](tools/release/README.md)).
 
-## Future plans
+## What's next
 
-These are hopes for later versions, not promises:
+Being explored for future versions:
 
 - **Duel and Team Duel**, another multiplayer mode Rare left unfinished.
 - **Round-based Eradication**, a cut version of Eradication that is still in the game's code.
