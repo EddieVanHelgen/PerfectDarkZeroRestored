@@ -96,6 +96,7 @@ list(APPEND PERFECTDARKZERORECOMP_SOURCES
     src/mod/anim_viewer.cpp
     src/mod/ai_behaviour_debug.cpp
     src/mod/physics_step.cpp
+    src/mod/prop_motion_rate.cpp
     src/mod/rate_fixes.cpp
     src/mod/file_read_log.cpp
     src/mod/stream_bank_warm.cpp
