@@ -32,6 +32,21 @@
 #include "../frame_timing.h"
 #include <rex/ui/flags.h> // d3d12_debug
 
+// AMD garbage hunt (pink squares in the bloom on AMD cards, 0.9.2): debug switch. Every texture, mip
+// level, array slice and colour target the native renderer creates is filled with bright magenta before the game's
+// data goes in (PoisonFill below; the texture upload, the resolve mirror views, the colour surfaces and the resolve
+// mirrors call it), so anything sampled that was never written shows magenta on every GPU instead of whatever the
+// memory held (zero on most NVIDIA allocations, old pictures on AMD).
+REXCVAR_DEFINE_BOOL(pdz_debug_poison_new_resources, false, "Render",
+                    "Debug (off): fill every new native-renderer texture, mip, array slice and colour target with "
+                    "bright magenta before the game writes it, so anything sampled before it is written shows magenta "
+                    "(the AMD garbage hunt)")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(pdz_debug_gpu_validation, false, "Render",
+                    "Debug (off, very slow): the D3D12 debug layer with GPU-based validation (uninitialised "
+                    "descriptors, resource states, out-of-range reads checked on the GPU); use with --d3d12_debug=true "
+                    "so the messages are logged")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(pdz_native_upload_shrink, true, "Render",
                     "Native renderer: a frame slot's upload buffer that grew for a burst (level load, video) goes back "
                     "down once the slot's frames used under a quarter of it for 600 frames (about 30 s at 60 Hz): it "
@@ -1325,6 +1340,193 @@ namespace pdz::native
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     b.UAV.pResource = resource;
     rec_.ResourceBarrier(1, &b);
+  }
+
+  // pdz_debug_gpu_validation: before the SDK creates the device (the app's OnPreSetup). The debug layer is process
+  // wide, so the provider's own EnableDebugLayer (d3d12_debug) later finds it on.
+  void EnableGpuValidationEarly()
+  {
+    if (!REXCVAR_GET(pdz_debug_gpu_validation))
+    {
+      return;
+    }
+    HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
+    using GetDebug = HRESULT(WINAPI *)(REFIID, void **);
+    const auto get = d3d12 ? reinterpret_cast<GetDebug>(reinterpret_cast<void *>(GetProcAddress(d3d12, "D3D12GetDebugInterface")))
+                           : nullptr;
+    ID3D12Debug1 *debug = nullptr;
+    if (!get || FAILED(get(IID_PPV_ARGS(&debug))) || !debug)
+    {
+      REXLOG_WARN("pdz_debug_gpu_validation: the D3D12 debug layer is not available (Graphics Tools not installed?)");
+      return;
+    }
+    debug->EnableDebugLayer();
+    debug->SetEnableGPUBasedValidation(TRUE);
+    debug->Release();
+    REXLOG_INFO("pdz_debug_gpu_validation: D3D12 debug layer with GPU-based validation on");
+  }
+
+  bool PoisonNewResources()
+  {
+    static const bool on = REXCVAR_GET(pdz_debug_poison_new_resources);
+    return on;
+  }
+
+  // One block of opaque magenta (R = B = 1, G = 0, A = 1) in `format`; returns the block's bytes (0 = not known: the
+  // caller fills 0xFF bytes, white). BC formats: both endpoints magenta, every index 0 (BC4 / BC5: the red channel 1,
+  // green 0).
+  uint32_t PoisonPattern(DXGI_FORMAT format, uint8_t out[16])
+  {
+    std::memset(out, 0, 16);
+    auto put16 = [&](uint32_t at, uint16_t v) {
+      out[at] = uint8_t(v);
+      out[at + 1] = uint8_t(v >> 8);
+    };
+    auto put32 = [&](uint32_t at, uint32_t v) {
+      put16(at, uint16_t(v));
+      put16(at + 2, uint16_t(v >> 16));
+    };
+    auto bc1 = [&](uint32_t at) {
+      put16(at, 0xF81F); // 5:6:5 magenta
+      put16(at + 2, 0xF81F);
+    };
+    constexpr uint16_t kHalfOne = 0x3C00;
+    constexpr uint32_t kFloatOne = 0x3F800000;
+    switch (format)
+    {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+      put32(0, 0xFFFF00FF);
+      return 4;
+    case DXGI_FORMAT_R8G8B8A8_SNORM:
+      put32(0, 0x7F7F007F);
+      return 4;
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+      put32(0, 0xFFF003FF);
+      return 4;
+    case DXGI_FORMAT_R11G11B10_FLOAT:
+      put32(0, 0x3C0u | (0x1E0u << 22));
+      return 4;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+      put16(0, kHalfOne);
+      put16(4, kHalfOne);
+      put16(6, kHalfOne);
+      return 8;
+    case DXGI_FORMAT_R16G16B16A16_UNORM:
+      put16(0, 0xFFFF);
+      put16(4, 0xFFFF);
+      put16(6, 0xFFFF);
+      return 8;
+    case DXGI_FORMAT_R16G16B16A16_SNORM:
+      put16(0, 0x7FFF);
+      put16(4, 0x7FFF);
+      put16(6, 0x7FFF);
+      return 8;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:
+      put32(0, kFloatOne);
+      put32(8, kFloatOne);
+      put32(12, kFloatOne);
+      return 16;
+    case DXGI_FORMAT_R32G32_FLOAT:
+      put32(0, kFloatOne);
+      return 8;
+    case DXGI_FORMAT_R32_FLOAT:
+      put32(0, kFloatOne);
+      return 4;
+    case DXGI_FORMAT_R16G16_FLOAT:
+      put16(0, kHalfOne);
+      return 4;
+    case DXGI_FORMAT_R16G16_UNORM:
+      put16(0, 0xFFFF);
+      return 4;
+    case DXGI_FORMAT_R16G16_SNORM:
+      put16(0, 0x7FFF);
+      return 4;
+    case DXGI_FORMAT_R16_FLOAT:
+      put16(0, kHalfOne);
+      return 2;
+    case DXGI_FORMAT_R16_UNORM:
+      put16(0, 0xFFFF);
+      return 2;
+    case DXGI_FORMAT_R16_SNORM:
+      put16(0, 0x7FFF);
+      return 2;
+    case DXGI_FORMAT_R8G8_UNORM:
+      out[0] = 0xFF;
+      return 2;
+    case DXGI_FORMAT_R8G8_SNORM:
+      out[0] = 0x7F;
+      return 2;
+    case DXGI_FORMAT_R8_UNORM:
+      out[0] = 0xFF;
+      return 1;
+    case DXGI_FORMAT_R8_SNORM:
+      out[0] = 0x7F;
+      return 1;
+    case DXGI_FORMAT_B5G6R5_UNORM:
+      put16(0, 0xF81F);
+      return 2;
+    case DXGI_FORMAT_B5G5R5A1_UNORM:
+      put16(0, 0xFC1F);
+      return 2;
+    case DXGI_FORMAT_B4G4R4A4_UNORM:
+      put16(0, 0xFF0F);
+      return 2;
+    case DXGI_FORMAT_BC1_UNORM:
+    case DXGI_FORMAT_BC1_UNORM_SRGB:
+      bc1(0);
+      return 8;
+    case DXGI_FORMAT_BC2_UNORM:
+    case DXGI_FORMAT_BC2_UNORM_SRGB:
+      std::memset(out, 0xFF, 8); // explicit alpha 15 everywhere
+      bc1(8);
+      return 16;
+    case DXGI_FORMAT_BC3_UNORM:
+    case DXGI_FORMAT_BC3_UNORM_SRGB:
+      out[0] = out[1] = 0xFF; // alpha endpoints 255, indices 0
+      bc1(8);
+      return 16;
+    case DXGI_FORMAT_BC4_UNORM:
+      out[0] = out[1] = 0xFF;
+      return 8;
+    case DXGI_FORMAT_BC4_SNORM:
+      out[0] = out[1] = 0x7F;
+      return 8;
+    case DXGI_FORMAT_BC5_UNORM:
+      out[0] = out[1] = 0xFF; // red 1, green (the second block) 0
+      return 16;
+    case DXGI_FORMAT_BC5_SNORM:
+      out[0] = out[1] = 0x7F;
+      out[8] = out[9] = 0x80; // green -1
+      return 16;
+    default:
+      return 0;
+    }
+  }
+
+  void PoisonFill(uint8_t *dst, uint64_t bytes, DXGI_FORMAT format)
+  {
+    uint8_t block[16];
+    const uint32_t n = PoisonPattern(format, block);
+    if (!n)
+    {
+      std::memset(dst, 0xFF, size_t(bytes));
+      return;
+    }
+    uint64_t i = 0;
+    for (; i + n <= bytes; i += n)
+    {
+      std::memcpy(dst + i, block, n);
+    }
+    if (i < bytes)
+    {
+      std::memcpy(dst + i, block, size_t(bytes - i));
+    }
   }
 
   ID3D12Resource *NativeDevice::CreateTexture(const D3D12_RESOURCE_DESC &desc, D3D12_RESOURCE_STATES initial_state,

@@ -82,6 +82,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc/func.h>
+#include <rex/system/kernel_state.h>
 
 #include "../game_cvars.h"
 #include "hook_profile.h" // pdz_hook_profile (must follow <rex/hook.h>)
@@ -96,6 +97,8 @@ REX_EXTERN(__imp__sub_823BD1A8);
 REX_EXTERN(__imp__sub_825ADF80);
 REX_EXTERN(__imp__sub_8216A190);
 REX_EXTERN(__imp__sub_825AD3B0);
+REX_EXTERN(sub_825AD148); // move a character (character, &position, 0): pdz_test_warp
+REX_EXTERN(sub_825AD3B0); // a human's look angles (character, f1 pitch, f2 yaw; radians): pdz_test_warp
 
 namespace
 {
@@ -549,6 +552,102 @@ void PdzTestCompleteMissionTick(uint8_t *base)
   base[kLevelState] = uint8_t(before | 0x01);
   REXLOG_INFO("pdz_test: complete mission (pdz_test_complete_mission): level state byte {:02X} -> {:02X} (COMPLETED)",
               before, base[kLevelState]);
+}
+
+// pdz_test_warp = "x y z yaw pitch" (testing tool, empty = off): player 1 is moved to that position and turned to that
+// look, the numbers an F12 mark line prints ("player pos (x y z), look yaw Y pitch P"; position in cm, angles in
+// degrees). Applied once each time the value changes to a new non-empty one, so an input script can visit several
+// spots: 'cvar <t> pdz_test_warp "-5550.6 171.2 -4673.6 -161.2 -14.7"'. The move is Rare's own (sub_825AD148(c, pos,
+// 0), what the spawn and the scripts use) and the look goes through sub_825AD3B0 (a human's pitch / yaw, radians); the
+// line 'pdz_test: warp ...' gives the position and the view angles (+0x1670 yaw, +0x1674 pitch) read back afterwards.
+// Given on the command line it waits for the first level's player (character type 2).
+REXCVAR_DEFINE_STRING(pdz_test_warp, "", "Testing",
+                      "TESTING TOOL: \"x y z yaw pitch\" (an F12 mark's position and look): player 1 is moved there "
+                      "and turned to that look once each time the value changes (input scripts: 'cvar <t> "
+                      "pdz_test_warp \"x y z yaw pitch\"'). Empty = off")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+void PdzTestWarpTick(PPCContext &ctx, uint8_t *base)
+{
+  static std::string applied;
+  static uint32_t scratch = 0;
+  const std::string value = REXCVAR_GET(pdz_test_warp);
+  if (value.empty() || value == applied)
+  {
+    if (value.empty())
+    {
+      applied.clear();
+    }
+    return;
+  }
+  std::string text = value;
+  for (char &c : text)
+  {
+    if (c == ',' || c == '"')
+    {
+      c = ' ';
+    }
+  }
+  std::istringstream in(text);
+  float v[5] = {};
+  int n = 0;
+  while (n < 5 && (in >> v[n]))
+  {
+    ++n;
+  }
+  constexpr uint32_t kPlayerOne = 0x82E3C3E4; // player 1's character (native_present.cpp's F12 mark)
+  const uint32_t c = Load32(base, kPlayerOne);
+  // A human player's character (type 2) in a level only: given on the command line, the value waits for one.
+  if (n < 3 || !IsGuestPointer(c) || Load32(base, c + kCharacterType) != 2)
+  {
+    if (n < 3)
+    {
+      applied = value;
+      REXLOG_WARN("pdz_test: warp: '{}' is not \"x y z [yaw pitch]\"; ignored", value);
+    }
+    return; // no player yet: tried again next tick
+  }
+  applied = value;
+  if (!scratch)
+  {
+    scratch = REX_KERNEL_MEMORY()->SystemHeapAlloc(16);
+  }
+  if (!scratch)
+  {
+    return;
+  }
+  auto store_float = [&](uint32_t address, float f) {
+    uint32_t bits;
+    std::memcpy(&bits, &f, 4);
+    uint8_t *p = base + address;
+    p[0] = uint8_t(bits >> 24);
+    p[1] = uint8_t(bits >> 16);
+    p[2] = uint8_t(bits >> 8);
+    p[3] = uint8_t(bits);
+  };
+  store_float(scratch, v[0]);
+  store_float(scratch + 4, v[1]);
+  store_float(scratch + 8, v[2]);
+  {
+    rex::CallFrame frame(ctx);
+    frame.ctx.r3.u64 = c;
+    frame.ctx.r4.u64 = scratch;
+    frame.ctx.r5.u64 = 0;
+    sub_825AD148(frame.ctx, base);
+  }
+  if (n >= 4)
+  {
+    constexpr double kRad = 3.14159265358979323846 / 180.0;
+    rex::CallFrame frame(ctx);
+    frame.ctx.r3.u64 = c;
+    frame.ctx.f1.f64 = double(n >= 5 ? v[4] : 0.0f) * kRad;
+    frame.ctx.f2.f64 = double(v[3]) * kRad;
+    sub_825AD3B0(frame.ctx, base);
+  }
+  REXLOG_INFO("pdz_test: warp (pdz_test_warp '{}'): player 1 {:08X} now at ({:.1f} {:.1f} {:.1f}), view yaw {:.1f} pitch "
+              "{:.1f}",
+              value, c, LoadFloat(base, c + kCharacterPosition), LoadFloat(base, c + kCharacterPosition + 4),
+              LoadFloat(base, c + kCharacterPosition + 8), LoadFloat(base, c + 0x1670), LoadFloat(base, c + 0x1674));
 }
 
 // cut_scenarios.cpp's hook on sub_82432678 (the match start's pass over the setup options): before and after.

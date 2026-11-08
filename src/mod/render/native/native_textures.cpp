@@ -106,6 +106,17 @@ REXCVAR_DEFINE_BOOL(pdz_native_texture_supersede, true, "Render",
                     "eviction: Jungle evicted 300 every 300 frames with about 1190 cached (log 162; memlog.md N5). Only "
                     "an older content goes, which guest memory no longer holds; if the same bytes come back they are "
                     "uploaded again. Off = only volatile textures replace their older contents (the old behaviour).");
+// AMD garbage fixes (on by default; each is a pure correctness fix: the same picture on every GPU vendor). New
+// textures are created without zeroing (CREATE_NOT_ZEROED: AMD hands back recycled memory, often an old picture;
+// NVIDIA usually zero), so anything sampled that was never written must be written first.
+REXCVAR_DEFINE_BOOL(pdz_fix_texture_unwritten, true, "Render",
+                    "Native renderer fix (on): a texture mip level or array slice the upload never writes (a level "
+                    "past the end of guest memory or without an address) is written as zero instead of keeping what "
+                    "the new memory held (garbage on AMD)");
+REXCVAR_DEFINE_BOOL(pdz_fix_mirror_view_zero, true, "Render",
+                    "Native renderer fix (on): a resolve mirror's alias view for a fetch of another size (its "
+                    "texels outside the resolved region) starts as zero, as the code always assumed, instead of the "
+                    "new memory's old content (garbage on AMD)");
 REXCVAR_DEFINE_BOOL(pdz_native_texture_untile_cached, false, "Render",
                     "Native renderer: the per-block untiler (tiled textures, and linear ones with a format conversion) "
                     "builds each row in a cached scratch buffer and copies the finished row into the upload heap with "
@@ -1352,6 +1363,16 @@ namespace pdz::native
         *upload_bytes = total;
       }
       uint8_t *upload = static_cast<uint8_t *>(slice.cpu);
+      // pdz_debug_poison_new_resources: every byte of every subresource starts magenta; the loop below overwrites what
+      // the guest data covers, and a subresource it never copies still gets the magenta one (after the loop).
+      const bool poison = PoisonNewResources();
+      if (poison)
+      {
+        PoisonFill(upload, total, t.resource->GetDesc().Format);
+      }
+      std::vector<uint8_t> copied(subresources, 0);
+      const char *skip_reason = nullptr;
+      uint32_t skip_level = 0;
       const uint32_t bpb = fi.bytes_per_block;
       const uint32_t bpb_log2 = Log2Floor(bpb);
       const bool is_3d = f.dimension == 2;
@@ -1371,6 +1392,11 @@ namespace pdz::native
         const uint32_t address = l.from_mips ? f.mip_address : f.base_address;
         if (!address)
         {
+          if (!skip_reason)
+          {
+            skip_reason = "no address";
+            skip_level = level;
+          }
           continue;
         }
         const uint32_t slices = volume ? std::max(1u, t.depth >> level) : t.array_size;
@@ -1392,6 +1418,11 @@ namespace pdz::native
           {
             REXLOG_WARN("pdz_native: texture {:08X} level {} exceeds physical memory; skipped", f.base_address,
                         level);
+            if (!skip_reason)
+            {
+              skip_reason = "past the end of physical memory";
+              skip_level = level;
+            }
             continue;
           }
           const uint8_t *guest = PhysPtr(address + guest_level_offset);
@@ -1469,6 +1500,59 @@ namespace pdz::native
           if (volume && array + 1 < slices)
           {
             continue; // one copy per volume mip, after its last slice
+          }
+          D3D12_TEXTURE_COPY_LOCATION dst_loc{};
+          dst_loc.pResource = t.resource;
+          dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+          dst_loc.SubresourceIndex = sub;
+          D3D12_TEXTURE_COPY_LOCATION src_loc{};
+          src_loc.pResource = slice.resource;
+          src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+          src_loc.PlacedFootprint = fp;
+          src_loc.PlacedFootprint.Offset += slice.offset;
+          if (async)
+          {
+            async->list->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+          }
+          else
+          {
+            dev.list()->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+          }
+          copied[sub] = 1;
+        }
+      }
+      // Subresources the loop never wrote (a level skipped above) hold whatever the new memory held. Logged (the first
+      // 16); with pdz_fix_texture_unwritten (on) they are written as zero, with the poison switch as magenta.
+      uint32_t missing = 0;
+      for (uint32_t sub = 0; sub < subresources; ++sub)
+      {
+        missing += copied[sub] ? 0u : 1u;
+      }
+      if (missing)
+      {
+        static std::atomic<uint32_t> missing_logged{0};
+        const bool fill = poison || REXCVAR_GET(pdz_fix_texture_unwritten);
+        if (missing_logged.fetch_add(1) < 16)
+        {
+          REXLOG_WARN("pdz_native: texture {:08X} {} {}x{} mips {} slices {}: {} of {} subresources not uploaded "
+                      "(first: level {}, {}); {}",
+                      f.base_address, fi.name, f.width, f.height, t.mips, volume ? 1u : t.array_size, missing,
+                      subresources, skip_level, skip_reason ? skip_reason : "?",
+                      poison ? "filled magenta (pdz_debug_poison_new_resources)"
+                      : fill ? "filled with zero (pdz_fix_texture_unwritten)"
+                             : "left as the new memory held them");
+        }
+        for (uint32_t sub = 0; fill && sub < subresources; ++sub)
+        {
+          if (copied[sub])
+          {
+            continue;
+          }
+          const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &fp = footprints[sub];
+          if (!poison)
+          {
+            std::memset(upload + fp.Offset, 0,
+                        size_t(fp.Footprint.RowPitch) * rows[sub] * std::max(1u, fp.Footprint.Depth));
           }
           D3D12_TEXTURE_COPY_LOCATION dst_loc{};
           dst_loc.pResource = t.resource;
@@ -1986,7 +2070,51 @@ namespace pdz::native
       ++im.alias_view_copies;
     }
 
-    // The alias view of `src` for a fetch of another size (texels outside the source's region stay zero).
+    // A new non-target texture's every subresource written once with zero (or magenta with the poison switch): the
+    // resource is created without zeroing, so what a later copy does not cover would otherwise be the old memory.
+    void FillNewTexture(NativeDevice &dev, ID3D12Resource *resource, bool magenta)
+    {
+      D3D12_RESOURCE_DESC desc = resource->GetDesc();
+      const uint32_t subresources =
+          desc.MipLevels * (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1u : desc.DepthOrArraySize);
+      std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(subresources);
+      UINT64 total = 0;
+      dev.device()->GetCopyableFootprints(&desc, 0, subresources, 0, footprints.data(), nullptr, nullptr, &total);
+      if (total == 0 || total > (1ull << 30) || !dev.list())
+      {
+        return;
+      }
+      const UploadSlice slice = dev.Upload(uint32_t(total), D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+      if (!slice.cpu)
+      {
+        return;
+      }
+      if (magenta)
+      {
+        PoisonFill(static_cast<uint8_t *>(slice.cpu), total, desc.Format);
+      }
+      else
+      {
+        std::memset(slice.cpu, 0, size_t(total));
+      }
+      for (uint32_t sub = 0; sub < subresources; ++sub)
+      {
+        D3D12_TEXTURE_COPY_LOCATION dst_loc{};
+        dst_loc.pResource = resource;
+        dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst_loc.SubresourceIndex = sub;
+        D3D12_TEXTURE_COPY_LOCATION src_loc{};
+        src_loc.pResource = slice.resource;
+        src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src_loc.PlacedFootprint = footprints[sub];
+        src_loc.PlacedFootprint.Offset += slice.offset;
+        dev.list()->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+      }
+    }
+
+    // The alias view of `src` for a fetch of another size. Texels outside the source's region: zero (written once at
+    // creation, pdz_fix_mirror_view_zero; before, the resource was not zeroed and they held the old memory), magenta
+    // with pdz_debug_poison_new_resources.
     HostTexture *GetMirrorView(NativeDevice &dev, Textures::Impl &im, const FetchDecoded &f, HostTexture &src)
     {
       const uint64_t key = MirrorKey(f);
@@ -2033,6 +2161,11 @@ namespace pdz::native
         {
           delete v;
           return nullptr;
+        }
+        if (PoisonNewResources() || REXCVAR_GET(pdz_fix_mirror_view_zero))
+        {
+          FillNewTexture(dev, v->resource, PoisonNewResources());
+          v->view_source = nullptr; // the refresh below copies the source over it
         }
         im.mirror_views.emplace(key, v);
       }
@@ -2202,7 +2335,10 @@ namespace pdz::native
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     D3D12_CLEAR_VALUE clear{};
     clear.Format = t->resource_format;
-    t->resource = dev->CreateTexture(desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, "pdz_native resolve mirror");
+    // The guest address and format in the debug name (debug layer / GPU-based validation messages say which mirror).
+    const std::string mirror_name = fmt::format("pdz_native resolve mirror {:08X} {} {}x{}", f.base_address,
+                                                kFormats[f.format & 63].name, f.width, f.height);
+    t->resource = dev->CreateTexture(desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, mirror_name.c_str());
     t->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     if (!t->resource)
     {
@@ -2216,6 +2352,13 @@ namespace pdz::native
     rtv.Format = t->resource_format;
     rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     dev->device()->CreateRenderTargetView(t->resource, &rtv, t->rtv);
+    // pdz_debug_poison_new_resources: a new resolve mirror starts magenta instead of zero (what a resolve does not
+    // cover then shows).
+    if (PoisonNewResources() && dev->list())
+    {
+      const FLOAT magenta[4] = {1.0f, 0.0f, 1.0f, 1.0f};
+      dev->list()->ClearRenderTargetView(t->rtv, magenta, 0, nullptr);
+    }
     im.mirrors.emplace(MirrorKey(f), t);
     im.mirrors_by_base[f.base_address].push_back(t);
     REXLOG_INFO("pdz_native: resolve mirror {}x{} (guest {:08X} {} {}x{} pitch {} {} {} bytes) host format {}",

@@ -96,6 +96,7 @@ public:
 
   void OnPreSetup(rex::RuntimeConfig &config) override
   {
+    pdz::native::EnableGpuValidationEarly(); // pdz_debug_gpu_validation (off): before the D3D12 device exists
     // Release blocker (Steam Deck test, 30 Oct): a settings file without a gpu_plugin line started with no GPU plugin
     // and the null backend: a black screen. The native renderer needs the xenos plugin (its null backend services the
     // ring), so an empty setting means xenos; an explicit gpu_plugin still wins.

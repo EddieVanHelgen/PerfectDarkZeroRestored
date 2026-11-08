@@ -579,6 +579,12 @@ namespace pdz::native
       rtv.Format = fm.view;
       rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
       dev->device()->CreateRenderTargetView(s->resource, &rtv, s->view);
+      // pdz_debug_poison_new_resources: a new colour surface starts magenta instead of zero.
+      if (PoisonNewResources() && dev->list())
+      {
+        const FLOAT magenta[4] = {1.0f, 0.0f, 1.0f, 1.0f};
+        dev->list()->ClearRenderTargetView(s->view, magenta, 0, nullptr);
+      }
     }
     D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
     srv.Format = fm.srv;

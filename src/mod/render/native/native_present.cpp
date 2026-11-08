@@ -100,6 +100,10 @@
 
 // Trace on mark (0.9.2, transparency vs water captures by hand): an F12 mark also captures everything about its
 // frame.
+REXCVAR_DEFINE_INT32(pdz_test_mark, 0, "Testing",
+                     "TESTING TOOL: each change to a new non-zero value takes one F12 mark (the game frame's PNG and "
+                     "the pdz_mark line with the position), for input scripts: 'cvar <t> pdz_test_mark 1', then 2...")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(pdz_trace_on_mark, false, "Testing",
                     "Test aid (off): an F12 mark (bind_mark_spot) also traces its frame: pdz_native_frame_trace (every "
                     "clear / resolve / draw), pdz_native_draw_dump of every draw (Rare's caller, shaders, states), and "
@@ -1721,6 +1725,16 @@ namespace pdz::native
           mark::g_presses.fetch_add(1, std::memory_order_relaxed);
         }
         mark::g_key_was_down = down;
+      }
+      // pdz_test_mark (testing tool): each new value is one F12 press (input scripts: 'cvar <t> pdz_test_mark 1', 2...).
+      static int32_t test_mark_seen = 0;
+      if (const int32_t m = REXCVAR_GET(pdz_test_mark); m != test_mark_seen)
+      {
+        test_mark_seen = m;
+        if (m != 0)
+        {
+          mark::g_presses.fetch_add(1, std::memory_order_relaxed);
+        }
       }
       autodiff::MarkOnSwap();
       tom::Step(base);

@@ -238,4 +238,13 @@ namespace pdz::native
     PFN_SerializeRootSignature serialize_root_signature_ = nullptr;
     PFN_Compile d3d_compile_ = nullptr;
   };
+  // pdz_debug_poison_new_resources (AMD garbage hunt, off): fill new textures / targets with magenta before use.
+  bool PoisonNewResources();
+  // pdz_debug_gpu_validation (off): the debug layer with GPU-based validation, enabled before the device exists.
+  void EnableGpuValidationEarly();
+  // One block of opaque magenta in `format` (bytes returned; 0 = format not known) and a fill of `bytes` with it
+  // (unknown format: 0xFF bytes).
+  uint32_t PoisonPattern(DXGI_FORMAT format, uint8_t out[16]);
+  void PoisonFill(uint8_t *dst, uint64_t bytes, DXGI_FORMAT format);
+
 } // namespace pdz::native

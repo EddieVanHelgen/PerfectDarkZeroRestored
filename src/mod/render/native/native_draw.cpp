@@ -12,6 +12,7 @@
 #include <cstring>
 #include <intrin.h> // __rdtsc (pdz_native_draw_timing)
 #include <mutex>
+#include <cstdlib>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -161,6 +162,21 @@ REXCVAR_DEFINE_INT32(pdz_native_split_tables, 1, "Render",
                      "with one scene pass are unchanged. 2 = in every frame (single-player too: the bloom chain resolves "
                      "1E0BD000 / 1E095000 / 1E08D000 again between draws that may reuse a table; A/B for the Datacore "
                      "gate). 0 = tables reused for the whole frame (the old behaviour).");
+REXCVAR_DEFINE_BOOL(pdz_fix_resolve_table_reuse, true, "Render",
+                    "Native renderer fix (on): the game resolves into the same small textures several times a frame "
+                    "(bloom blur, glow and luminance chains). A draw after such a resolve must not reuse a texture "
+                    "table built before it: the reused table skips the barrier back from the resolve's render-target "
+                    "state, and sampling a render target is undefined (NVIDIA usually shows the new picture, AMD and "
+                    "the Steam Deck show compressed garbage: pink or blocky squares in the bloom). On = "
+                    "pdz_native_split_tables 2 in every frame; off = the old rule (split screen only)");
+REXCVAR_DEFINE_BOOL(pdz_debug_unbarriered_magenta, false, "Render",
+                    "Debug (off): show on any GPU what AMD shows. A draw that would reuse a texture table while one of "
+                    "its textures is still a render target (the hazard pdz_fix_resolve_table_reuse removes; turn the "
+                    "fix off to see it) samples bright magenta for that texture instead of the undefined read, and the "
+                    "draw is logged ('pdz_native: unbarriered read', each pixel shader and texture once).");
+REXCVAR_DEFINE_STRING(pdz_debug_unbarriered_magenta_only, "", "Render",
+                      "Debug: with pdz_debug_unbarriered_magenta, only these guest texture addresses (hex, comma "
+                      "separated, e.g. 1C4EC000) are shown magenta; empty = all.");
 REXCVAR_DEFINE_BOOL(pdz_native_split_geometry, true, "Render",
                     "Native renderer, split screen (stage1/subagents/split.md): in multi-pass frames (see "
                     "pdz_native_split_tables) pdz_native_geometry_hash_once holds for one pass segment instead of the "
@@ -566,9 +582,16 @@ namespace pdz::native
     }
 
     // Whether a resolve into a sampled mirror ends the pass segment in `frame` (some per-pass cache acts).
-    bool SegmentsActive(uint64_t frame)
+    // pdz_native_split_tables, raised to 2 by pdz_fix_resolve_table_reuse (0 = explicitly off stays off).
+    int32_t TablesMode()
     {
       const int32_t tables = REXCVAR_GET(pdz_native_split_tables);
+      return tables != 0 && REXCVAR_GET(pdz_fix_resolve_table_reuse) ? std::max(tables, 2) : tables;
+    }
+
+    bool SegmentsActive(uint64_t frame)
+    {
+      const int32_t tables = TablesMode();
       if (tables >= 2)
       {
         return true;
@@ -580,7 +603,7 @@ namespace pdz::native
     {
       ++g_split.segment;
       ++g_split.boundaries;
-      const int32_t tables = REXCVAR_GET(pdz_native_split_tables);
+      const int32_t tables = TablesMode();
       const bool split = SplitActiveAt(frame);
       if (tables >= 2 || (tables == 1 && split))
       {
@@ -1930,9 +1953,115 @@ namespace pdz::native
       return k.Hash();
     }
 
+    // pdz_debug_unbarriered_magenta: the textures of each table built this frame, and one magenta texture.
+    struct UnbarrieredSim
+    {
+      uint64_t frame = ~0ull;
+      std::unordered_map<uint64_t, std::vector<HostTexture *>> tables; // table key -> textures it binds
+      std::vector<const HostTexture *> substitute;                    // the rebuild in progress: these get magenta
+      ID3D12Resource *magenta = nullptr;
+      D3D12_RESOURCE_STATES magenta_state = D3D12_RESOURCE_STATE_COPY_DEST;
+      D3D12_CPU_DESCRIPTOR_HANDLE magenta_srv{};
+      uint64_t draws = 0;
+      uint32_t logged = 0;
+    };
+    UnbarrieredSim g_unbarriered;
+
+    // pdz_debug_unbarriered_magenta_only: the address filter (parsed when the string changes).
+    bool UnbarrieredWanted(uint32_t base_address)
+    {
+      static std::string spec;
+      static std::vector<uint32_t> only;
+      const std::string now = REXCVAR_GET(pdz_debug_unbarriered_magenta_only);
+      if (now != spec)
+      {
+        spec = now;
+        only.clear();
+        size_t i = 0;
+        while (i < spec.size())
+        {
+          const size_t j = spec.find(',', i);
+          const std::string item = spec.substr(i, j == std::string::npos ? std::string::npos : j - i);
+          if (!item.empty())
+          {
+            only.push_back(uint32_t(std::strtoul(item.c_str(), nullptr, 16)));
+          }
+          i = j == std::string::npos ? spec.size() : j + 1;
+        }
+      }
+      return only.empty() || std::find(only.begin(), only.end(), base_address) != only.end();
+    }
+
+    // 4x4 R16G16B16A16_FLOAT (4, 0, 4, 1): magenta, bright enough to survive tone mapping.
+    D3D12_CPU_DESCRIPTOR_HANDLE UnbarrieredMagentaSrv(NativeDevice &dev)
+    {
+      UnbarrieredSim &u = g_unbarriered;
+      if (!u.magenta)
+      {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = 4;
+        desc.Height = 4;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        desc.SampleDesc.Count = 1;
+        u.magenta = dev.CreateTexture(desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, "pdz_debug magenta");
+        if (!u.magenta)
+        {
+          return {};
+        }
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT64 total = 0;
+        dev.device()->GetCopyableFootprints(&desc, 0, 1, 0, &fp, nullptr, nullptr, &total);
+        const UploadSlice slice = dev.Upload(uint32_t(total), D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+        if (!slice.cpu)
+        {
+          return {};
+        }
+        const uint16_t texel[4] = {0x4400, 0, 0x4400, 0x3C00}; // 4.0, 0, 4.0, 1.0
+        for (uint32_t y = 0; y < 4; ++y)
+        {
+          for (uint32_t x = 0; x < 4; ++x)
+          {
+            std::memcpy(static_cast<uint8_t *>(slice.cpu) + fp.Offset + y * fp.Footprint.RowPitch + x * 8, texel, 8);
+          }
+        }
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = u.magenta;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = slice.resource;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = fp;
+        src.PlacedFootprint.Offset += slice.offset;
+        dev.list()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        dev.Transition(u.magenta, u.magenta_state,
+                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        u.magenta_srv = dev.AllocStagingSrv();
+        if (u.magenta_srv.ptr)
+        {
+          D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+          srv.Format = desc.Format;
+          srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+          srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+          srv.Texture2D.MipLevels = 1;
+          dev.device()->CreateShaderResourceView(u.magenta, &srv, u.magenta_srv);
+        }
+      }
+      return u.magenta_srv;
+    }
+
     bool BindSrvTable(NativeDevice &dev, const shadow::DrawRecord &r, const NativeShader *vs,
                       const NativeShader *ps, D3D12_GPU_DESCRIPTOR_HANDLE &out)
     {
+      const bool sim = REXCVAR_GET(pdz_debug_unbarriered_magenta);
+      if (sim && g_unbarriered.frame != dev.frame_index())
+      {
+        g_unbarriered.frame = dev.frame_index();
+        g_unbarriered.tables.clear();
+      }
+      g_unbarriered.substitute.clear();
       if (vs->textures.empty() && ps->textures.empty())
       {
         // Nothing sampled: one shared null table per frame.
@@ -1958,9 +2087,44 @@ namespace pdz::native
       const uint64_t key = (TableKey(r, vs, ps) ^ (g_split.table_epoch * 0x9E3779B97F4A7C15ull)) | 2u;
       if (g_frame.srv_tables.Find(key, out))
       {
-        ++g_stats.table_reuse;
-        return true;
+        bool reuse = true;
+        if (sim)
+        {
+          // A texture of the reused table still in a render-target state (resolved into since the table was built,
+          // no barrier back): the undefined read. Rebuilt below with magenta for it.
+          if (auto it = g_unbarriered.tables.find(key); it != g_unbarriered.tables.end())
+          {
+            for (HostTexture *t : it->second)
+            {
+              if (!(t->state & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) && UnbarrieredWanted(t->base_address))
+              {
+                g_unbarriered.substitute.push_back(t);
+                // Each distinct (pixel shader, texture) once, 64 at most.
+                static std::vector<std::pair<uint64_t, uint32_t>> seen;
+                const std::pair<uint64_t, uint32_t> id{ps->hash, t->base_address};
+                if (g_unbarriered.logged < 64 && std::find(seen.begin(), seen.end(), id) == seen.end())
+                {
+                  seen.push_back(id);
+                  ++g_unbarriered.logged;
+                  REXLOG_INFO("pdz_native: unbarriered read (pdz_debug_unbarriered_magenta): draw #{} caller {:08X} vs "
+                              "{:016x} ps {:016x} reuses a table whose texture {:08X} {}x{} is still a render target "
+                              "(state {:#x}); shown magenta",
+                              r.sequence, r.caller, vs->hash, ps->hash, t->base_address, t->key_width, t->key_height,
+                              uint32_t(t->state));
+                }
+              }
+            }
+          }
+          reuse = g_unbarriered.substitute.empty();
+          g_unbarriered.draws += reuse ? 0 : 1;
+        }
+        if (reuse)
+        {
+          ++g_stats.table_reuse;
+          return true;
+        }
       }
+      std::vector<HostTexture *> bound_textures;
       // Compact table: only up to the highest entry the two shaders sample (space * 32 + slot; most draws use a
       // handful of 2D slots, a cube map reaches 64+, a stacked-array tfetch3D 96+). The root signature's 128-entry
       // range stays inside the heap through its padding, and entries past `count` are never read.
@@ -2052,10 +2216,27 @@ namespace pdz::native
           }
           D3D12_CPU_DESCRIPTOR_HANDLE dst = d.cpu;
           dst.ptr += SIZE_T(uint32_t(t.dim) * 32 + t.slot) * size;
-          dev.CopySrv(dst, view.srv);
+          D3D12_CPU_DESCRIPTOR_HANDLE src = view.srv;
+          if (sim)
+          {
+            bound_textures.push_back(view.texture);
+            const auto &sub = g_unbarriered.substitute;
+            if (std::find(sub.begin(), sub.end(), view.texture) != sub.end())
+            {
+              if (const D3D12_CPU_DESCRIPTOR_HANDLE m = UnbarrieredMagentaSrv(dev); m.ptr)
+              {
+                src = m;
+              }
+            }
+          }
+          dev.CopySrv(dst, src);
         }
       }
       g_frame.srv_tables.Insert(key, d.gpu);
+      if (sim)
+      {
+        g_unbarriered.tables[key] = std::move(bound_textures);
+      }
       out = d.gpu;
       return true;
     }
@@ -3990,9 +4171,28 @@ namespace pdz::native
       }
     }
     // A table of this segment samples the texture just written: the draws after the resolve must not reuse it.
-    if (mirror.table_segment == g_split.segment && SegmentsActive(frame))
+    if (mirror.table_segment == g_split.segment)
     {
-      StartSegment(frame);
+      const bool fixed = SegmentsActive(frame);
+      // Each such texture once (the first 32): which of the game's re-resolved textures this concerns.
+      static uint32_t logged_bases[32] = {};
+      static uint32_t logged = 0;
+      if (logged < 32 &&
+          std::find(logged_bases, logged_bases + logged, mirror.base_address) == logged_bases + logged)
+      {
+        logged_bases[logged++] = mirror.base_address;
+        REXLOG_INFO("pdz_native: resolve into {:08X} {}x{} (frame {}), which a texture table built earlier in this pass "
+                    "samples: {}",
+                    mirror.base_address, mirror.key_width, mirror.key_height, frame,
+                    fixed ? "the draws after it build their tables again (barrier back to shader read; "
+                            "pdz_fix_resolve_table_reuse)"
+                          : "the draws after it may reuse that table and sample it in the render-target state "
+                            "(undefined: garbage on AMD)");
+      }
+      if (fixed)
+      {
+        StartSegment(frame);
+      }
     }
   }
 

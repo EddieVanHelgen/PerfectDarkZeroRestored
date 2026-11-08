@@ -69,6 +69,9 @@ namespace pdz::native
   // nothing has set (logged), returns true. A non-null graphics_backend on the command line turns the native renderer
   // off instead (the emulator alone). pdz_native_renderer set anywhere: nothing changes (false).
   bool ApplyNativeDefault(std::string &backend);
+  // pdz_debug_gpu_validation (off; native_device.cpp): the D3D12 debug layer with GPU-based validation, enabled in the
+  // app's OnPreSetup before the device exists.
+  void EnableGpuValidationEarly();
 
   // App setup, after ChooseScaleAtStartup (native_present.cpp): latches pdz_native_present_timing, registers the null
   // command processor's XE_SWAP listener when it is 1 with the null backend, and sets the frame_pacing latency pairing

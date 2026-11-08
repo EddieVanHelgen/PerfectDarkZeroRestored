@@ -171,6 +171,7 @@ REX_HOOK_RAW(sub_822082E8)
 #endif // PDZ_MUSIC_LIFTED
 
 void PdzTestCompleteMissionTick(uint8_t *base); // test_mp_setup.cpp
+void PdzTestWarpTick(PPCContext &ctx, uint8_t *base); // test_mp_setup.cpp (pdz_test_warp)
 
 REX_HOOK_RAW(sub_82201038)
 {
@@ -191,6 +192,7 @@ REX_HOOK_RAW(sub_82201038)
     audio_presence_log::Tick(base); // 5 s summary (pdz_audio_presence_log)
     restorations::Tick(ctx, base);  // delayed restoration lines (pdz_restore_light_speech)
     PdzTestCompleteMissionTick(base); // pdz_test_complete_mission (testing tool, test_mp_setup.cpp)
+    PdzTestWarpTick(ctx, base);       // pdz_test_warp (testing tool, test_mp_setup.cpp)
     ctx.f1.f64 = f1;
   }
   __imp__sub_82201038(ctx, base);
