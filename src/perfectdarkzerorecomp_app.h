@@ -41,6 +41,7 @@
 #endif
 #include "utils.h"
 #include "setup/first_run.h"
+#include "setup/platinum.h" // the US Platinum Hits disc, translated at load
 #include "mod/render/native/native_dxc.h"
 #include "mod/render/native/native_generate.h"
 #include "setup/setup_window.h"
@@ -154,7 +155,11 @@ public:
     pdz::gpusync::OnBackendSelected(backend, !config.gpu_plugin.empty(), config.graphics != nullptr);
   }
 
-  // void OnLoadXexImage(std::string& xex_image) override {}
+  void OnLoadXexImage(std::string & /*xex_image*/) override
+  {
+    // The US Platinum Hits disc: its data laid out as Title Update 3's by the SDK's loader step (setup/platinum.h).
+    pdz::platinum::Register();
+  }
   // tu3-base: no image patches (the launch 16:9 patch isn't ported).
   void OnPostLoadXexImage() override
   {
@@ -344,7 +349,8 @@ public:
     {
       const pdz::settings_ui::Choice choice = pdz::settings_ui::MaybeShow(
           {utils::SettingsDir() / "hardware.toml", utils::SettingsDir() / "mapping.toml",
-           rex::filesystem::GetExecutableFolder() / "logs", paths.user_data_root, paths.cache_root},
+           rex::filesystem::GetExecutableFolder() / "logs", paths.user_data_root, paths.cache_root,
+           pdz::first_run::PlatinumDisc(paths.game_data_root)},
           pdz::first_run::SetupRanThisStart());
       if (choice == pdz::settings_ui::Choice::kQuit)
       {

@@ -40,7 +40,7 @@ Other projects take the game in different directions, and they're all well worth
 - **Bots in Sabotage.** Sabotage on Xbox 360 shipped without bot support. After 85 commits and 70+ test runs, the bots can finally play the mode properly.
 - **Up to 31 bots** in a match, and 32-player Infection. Bots can use turrets. Facility and Ruin stay 8-player maps,
   per Rare's original settings.
-- Both official map packs can be imported from your own console. A known fault in some copies of Map Pack One is repaired when you install it.
+- Both official map packs can be imported from your own console. A known fault in some copies of Map Pack One is repaired when you install it. The US Platinum Hits disc already has them.
 - A native Direct3D 12 renderer that matches the Xbox 360 graphics, up to 4K, with higher frame rates and much lower GPU use than emulated rendering.
 - Up to 120 fps in the campaign, if your PC and screen support it. Multiplayer is locked at 60 fps.
 - Built on Title Update 3, with all of Rare's tweaks and bug fixes.
@@ -56,9 +56,10 @@ Other projects take the game in different directions, and they're all well worth
 - A processor with AVX2: Intel 4th generation ("Haswell", 2013) or newer, or AMD Ryzen or newer.
 - A graphics card that supports DirectX 12.
 - The [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe).
-- Your own Perfect Dark Zero disc, as a disc image (`.iso`) or its extracted files. Any of the five retail discs
-  works.
-- Title Update 3 for Perfect Dark Zero, copied from your own Xbox 360. Any disc's Title Update 3 works.
+- Your own Perfect Dark Zero disc, as a disc image (`.iso`) or its extracted files. Any of the five original retail
+  discs works, and so does the US Platinum Hits disc (see below).
+- Title Update 3 for Perfect Dark Zero, copied from your own Xbox 360. Any disc's Title Update 3 works. The US
+  Platinum Hits disc doesn't need it.
 - Optional: the two official map packs, copied from your own Xbox 360.
 
 No game files are included, and none can be downloaded through PDZ Restored.
@@ -70,9 +71,17 @@ No game files are included, and none can be downloaded through PDZ Restored.
 3. Start `PDZRestored.exe`. The first start checks your files and prepares them. This takes about 20 seconds.
 4. The settings window opens. Add your map packs on the Map packs tab if you have them, then press Play.
 
+### US Platinum Hits
+
+The US Platinum Hits disc works as it is:
+
+1. Put its disc image (`.iso`), or the extracted disc, into the `game` folder.
+2. You don't need Title Update 3. If one is in the `game` folder, it isn't used for this disc.
+3. Both map packs are already on this disc. The Map packs tab shows them as included; there's nothing to add there.
+
 ## Status
 
-0.9.1 is an early release. So far it has been tested on one PC with NVIDIA GPU.
+Status: 0.9.3 is the current release (November 2026). It's playable from start to finish; see the release notes for what's new. So far it has been tested on one PC with NVIDIA GPU.
 
 Reports from other PCs are very welcome, especially with AMD or Intel graphics cards or older processors. Please
 [open an issue](https://github.com/EddieVanHelgen/PerfectDarkZeroRestored/issues) and attach the newest log from

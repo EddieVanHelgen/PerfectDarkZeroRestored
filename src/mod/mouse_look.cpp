@@ -25,6 +25,7 @@
 #include <rex/input/input_system.h>
 #include <rex/input/mnk/mnk_input_driver.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/windowed_app_context.h>
 
@@ -87,6 +88,16 @@ REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_motion_y, 0.0, "Mouse",
                       "TESTING TOOL: as pdz_mouse_test_motion, counts per second downward")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_steer, 0.0, "Mouse",
+                      "TESTING TOOL: while something other than the player's own view is steered (a turret, the "
+                      "CamSpy, the guided rocket, a vehicle), this many mouse counts per second to the right are added "
+                      "where the steering takes the mouse's motion (MouseLook::TakeSteerStick), after Windows and the "
+                      "window focus: for unattended runs, where pdz_mouse_test_motion can't reach a window that "
+                      "isn't in front. 0 = off")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_steer_y, 0.0, "Mouse",
+                      "TESTING TOOL: as pdz_mouse_test_steer, counts per second downward")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_face_yaw, 999.0, "Mouse",
                       "TESTING TOOL: sets the on-foot view's yaw to this (degrees) once each time the value changes "
                       "(scripted routes: face a direction, then walk). 999 = off")
@@ -171,7 +182,7 @@ namespace pdz::mouse
       switch (caller)
       {
       case 0x8253FA98: return "CamSpy";            // sub_8253F7D8 (the CamSpy, vtable 820BFA40)
-      case 0x8258DF48: return "hardpoint turret";  // sub_8258CEA0
+      case 0x8258DF48: return "turret";            // sub_8258CEA0 (every mounted turret; owner = its user)
       case 0x82253588: return "guided rocket";     // sub_822533E8 (the rocket launcher's guided rocket)
       case 0x82675ECC: return "hovercraft";        // sub_82675B20
       case 0x8268659C: return "jetpack";           // sub_82685F80
@@ -185,44 +196,112 @@ namespace pdz::mouse
     bool LogDue(uint32_t key);
     uint32_t Be32(const uint8_t *base, uint32_t address);
 
-    // True when the object is of the player class (vtable in the image, sub_8259B6D8 at vtable +744: third_person.cpp
-    // IsPlayer), the only objects with an input block at +6560. Log 0.9.2.1 (Bridge, hardpoint turret): the steered
-    // thing passed to the look update (sub_8258CEA0's call) is the turret's look state, whose +6560 is a float
-    // (0x3F800000), so reading +1680 from it faulted (guest 0x3F800690). Any other object: -1, with one line.
-    std::atomic<bool> g_not_player_logged{false};
-    bool PlayerClass(const uint8_t *base, uint32_t object, uint32_t caller)
+    // True when the object is of Title Update 3's player class: the human player's vtable 820C7DE0 (counter_op.cpp,
+    // cut_scenarios.cpp kHumanVtable), or any vtable in the image with sub_825AAEF0 at +748 (game_fixes.cpp IsPlayer;
+    // the launch build's sub_8259B6D8 at +744 is not TU3's). For the log lines only: which object gave the user.
+    constexpr uint32_t kHumanVtable = 0x820C7DE0;
+    bool PlayerClass(const uint8_t *base, uint32_t object)
     {
-      const uint32_t vtbl = Be32(base, object);
-      const bool player = vtbl >= GameConstants::kImageBase &&
-                          vtbl < GameConstants::kImageBase + GameConstants::kImageSize &&
-                          Be32(base, vtbl + 744) == 0x8259B6D8;
-      if (!player && !g_not_player_logged.exchange(true, std::memory_order_relaxed))
+      if (object < 0x10000u)
       {
-        REXLOG_INFO("pdz_fix: mouse steering: object {:08X} (vtable {:08X}, caller {:08X}) is not a player: its "
-                    "+6560 is not read as an input block (it crashed Bridge's hardpoint turret)",
-                    object, vtbl, caller);
+        return false;
       }
-      return player;
+      const uint32_t vtbl = Be32(base, object);
+      return vtbl == kHumanVtable ||
+             (vtbl >= GameConstants::kImageBase && vtbl < GameConstants::kImageBase + GameConstants::kImageSize &&
+              Be32(base, vtbl + 748) == 0x825AAEF0);
+    }
+
+    // One line per key for the whole run (a caller and what was found).
+    bool LogOnce(uint32_t key)
+    {
+      static std::atomic<uint32_t> keys[32] = {};
+      for (auto &slot : keys)
+      {
+        uint32_t k = slot.load(std::memory_order_relaxed);
+        if (k == key)
+        {
+          return false;
+        }
+        if (k == 0 && slot.compare_exchange_strong(k, key))
+        {
+          return true;
+        }
+        if (k == key)
+        {
+          return false;
+        }
+      }
+      return false;
     }
   } // namespace
 
   void NoteSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller)
   {
     // Guest user 0's player only (the SDK merges keyboard and mouse into user 0). He is the owner (the CamSpy, a
-    // turret, the guided rocket) or the steered view itself (the hovercraft and the jetpack turn his own view with
-    // the vehicle as the owner).
-    const auto user_of = [base, caller](uint32_t object_address) -> int64_t {
-      // The hovercraft and the jetpack (callers 82675ECC / 8268659C, the view is the player) read it as before.
-      const bool own_view = caller == 0x82675ECC || caller == 0x8268659C;
-      if (object_address < 0x10000u || (!own_view && !PlayerClass(base, object_address, caller)))
+    // turret: sub_8258CEA0 passes the turret's user at +1476, the guided rocket) or the steered view itself (the
+    // hovercraft and the jetpack turn his own view with the vehicle as the owner). Both are asked, as in 0.9.2: the
+    // input block at +6560, its user index at +1680.
+    //
+    // The crash scripted Bridge runs found (0.9.1 / 0.9.2 code): the turret update (sub_8258CEA0) passes the
+    // turret itself as the steered view. A turret object is smaller than 6560 bytes, so its "+6560" is whatever lies
+    // after it in memory, a different value from run to run (0x3F800000 and 0x3CD8199A in those runs), and reading
+    // +1680 through it faulted when that address wasn't mapped (guest 0x3F800690, 0x3CD8202A). So both reads are
+    // checked first: the word at +6560 and the user index through it must be 4-byte aligned, in the guest range and
+    // readable (the host page, as cut_scenarios.cpp checks). Otherwise user -1 for that call only, with one line per
+    // caller. A page query is about a microsecond; this runs a few times a frame, only while something other than
+    // the player's own view is steered. (28dc163 instead read only objects of the launch build's player class, a test
+    // TU3's own player fails, so no turret took the mouse in the unreleased 0.9.2.1.)
+    const auto readable = [base](uint32_t address) {
+      if ((address & 3u) != 0 || address < 0x10000u || address >= 0xFFFF0000u)
+      {
+        return false;
+      }
+      size_t length = 4;
+      rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
+      return rex::memory::QueryProtect(base + address, length, access) &&
+             (uint32_t(access) & uint32_t(rex::memory::PageAccess::kReadOnly)) != 0 && length >= 4;
+    };
+    const auto user_of = [base, caller, &readable](uint32_t object_address) -> int64_t {
+      if (object_address < 0x10000u || object_address >= 0xFFFF0000u - 6560u)
       {
         return -1;
       }
-      const uint32_t input = Be32(base, object_address + 6560);
-      return input >= 0x10000u ? int64_t(int32_t(Be32(base, input + 1680))) : -1;
+      const bool block_ok = readable(object_address + 6560);
+      const uint32_t input = block_ok ? Be32(base, object_address + 6560) : 0u;
+      if (block_ok && input < 0x10000u)
+      {
+        return -1; // no input block: as 0.9.2
+      }
+      if (!block_ok || !readable(input + 1680))
+      {
+        if (LogOnce((caller & ~3u) | 3u))
+        {
+          REXLOG_INFO("pdz_fix: mouse steering: caller {:08X} ({}): object {:08X} (vtable {:08X}) has {:08X} at "
+                      "+6560, not a readable input block: not read (it crashed Bridge's hardpoint turret)",
+                      caller, SteeredName(caller), object_address, Be32(base, object_address), input);
+        }
+        return -1;
+      }
+      return int64_t(int32_t(Be32(base, input + 1680)));
     };
     const int64_t owner_user = user_of(owner), view_user = user_of(object);
     const uint32_t player = owner_user == 0 ? owner : view_user == 0 ? object : 0;
+    // Once per caller and outcome: which caller, and whether the user was found through the owner or the view.
+    const uint32_t outcome = player == 0 ? 0u : player == owner ? 1u : 2u;
+    if (LogOnce((caller & ~3u) | outcome))
+    {
+      const auto what = [base](uint32_t o, int64_t user) {
+        return o < 0x10000u ? std::string("none")
+                            : fmt::format("vtable {:08X}{}, user {}", Be32(base, o),
+                                          PlayerClass(base, o) ? ", player class" : "", user);
+      };
+      REXLOG_INFO("pdz_mouse: steering: caller {:08X} ({}): owner {:08X} ({}), view {:08X} ({}): {}", caller,
+                  SteeredName(caller), owner, what(owner, owner_user), object, what(object, view_user),
+                  outcome == 1   ? "user 0 found through the owner"
+                  : outcome == 2 ? "user 0 found through the view"
+                                 : "no user 0 (someone else uses it): not taken");
+    }
     // While he looks on foot (within the last second) only his own steering counts; a level that starts in a
     // vehicle has no such player yet, and then user 0 is enough.
     const bool human_known = NowNs() - g_human_ns.load(std::memory_order_relaxed) < 1000000000LL;
@@ -296,9 +375,7 @@ namespace pdz::mouse
         return fmt::format("{:08X}", object);
       }
       const uint32_t vtbl = Be32(base, object);
-      const bool player_class = vtbl >= GameConstants::kImageBase &&
-                                vtbl < GameConstants::kImageBase + GameConstants::kImageSize &&
-                                Be32(base, vtbl + 744) == 0x8259B6D8; // third_person.cpp IsPlayer
+      const bool player_class = PlayerClass(base, object);
       int32_t user = -1;
       if (player_class)
       {
@@ -669,6 +746,12 @@ namespace pdz::mouse
     out.counts_x = steer_dx_;
     out.counts_y = steer_dy_;
     steer_dx_ = steer_dy_ = 0.0;
+    if (steering)
+    {
+      // pdz_mouse_test_steer / _y (testing tools): synthetic motion where the real mouse's arrives.
+      out.counts_x += REXCVAR_GET(pdz_mouse_test_steer) * dt;
+      out.counts_y += REXCVAR_GET(pdz_mouse_test_steer_y) * dt;
+    }
     if (!steering)
     {
       steer_vx_ = steer_vy_ = 0.0;

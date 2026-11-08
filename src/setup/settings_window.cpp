@@ -848,6 +848,18 @@ namespace pdz::settings_ui
       for (size_t i = 0; i < map_packs::Packs().size(); ++i)
       {
         const map_packs::State st = map_packs::StateOf(root, i, deep);
+        const bool installed_copy = st.status == map_packs::Status::kInstalled ||
+                                    st.status == map_packs::Status::kInstalledRepaired;
+        if (ui.ctx.packs_on_disc)
+        {
+          // The US Platinum Hits: the pack is on the disc. A copy installed before (from another disc's setup) can
+          // still be removed; nothing can be added.
+          SetWindowTextW(GetDlgItem(ui.window, kPackStatus0 + int(i)), L"Included on your disc");
+          // "Included" (not "Add...", whose accent style is drawn bright even when disabled): a greyed panel button.
+          SetWindowTextW(GetDlgItem(ui.window, kPackButton0 + int(i)), installed_copy ? L"Remove" : L"Included");
+          EnableWindow(GetDlgItem(ui.window, kPackButton0 + int(i)), installed_copy ? TRUE : FALSE);
+          continue;
+        }
         const std::wstring status = st.status == map_packs::Status::kInstalled          ? L"Installed"
                                     : st.status == map_packs::Status::kInstalledRepaired ? L"Installed (repaired)"
                                     : st.status == map_packs::Status::kDidNotVerify
@@ -862,6 +874,13 @@ namespace pdz::settings_ui
 
     void AddPackFiles(Ui &ui)
     {
+      if (ui.ctx.packs_on_disc)
+      {
+        // Installing them on top would only add a second copy of maps the disc already has.
+        Box(ui.window, L"Your disc already includes both map packs, so there's nothing to add.",
+            L"PDZ Restored Settings", MB_OK | MB_ICONINFORMATION);
+        return;
+      }
       fs::path file;
       if (!setup_ui::PickFile(L"Choose a map pack file",
                               {{L"Map pack files", L"*.*"}}, file))
@@ -2130,7 +2149,7 @@ namespace pdz::settings_ui
           // A pack's status: installed in the info colour, not installed dimmer, didn't verify as a warning.
           wchar_t status[16] = {};
           GetWindowTextW(reinterpret_cast<HWND>(lp), status, 16);
-          text = wcsncmp(status, L"Installed", 9) == 0 ? theme::kCyan
+          text = wcsncmp(status, L"Installed", 9) == 0 || wcsncmp(status, L"Included", 8) == 0 ? theme::kCyan
                  : wcsncmp(status, L"Didn't", 6) == 0  ? theme::kOrange
                                                        : theme::kTextDim;
         }
@@ -2372,7 +2391,9 @@ namespace pdz::settings_ui
 
       // Map packs.
       Add(ui, kTabPacks, L"STATIC",
-          L"Optional. Add the map packs from your own Xbox 360 to get their six extra maps.",
+          ctx.packs_on_disc
+              ? L"Your disc is the Platinum Hits edition: both map packs and their six extra maps are already on it."
+              : L"Optional. Add the map packs from your own Xbox 360 to get their six extra maps.",
           SS_LEFT, x, 48, 600, 34, 0);
       for (size_t i = 0; i < map_packs::Packs().size(); ++i)
       {
@@ -2392,8 +2413,14 @@ namespace pdz::settings_ui
       Button(ui, kTabPacks, L"Check installed packs", x + 170, 236, 180, kPackCheck,
              L"Checks the installed packs again, for example after you've moved the game folder.");
       ui.tab_help[kTabPacks] =
-          packs_tab ? L"Got the map packs? Add them now, or any time later from Settings."
-                    : L"Point at a pack or button to see what it does.";
+          ctx.packs_on_disc ? L"Both map packs are included on your disc. There's nothing to add."
+          : packs_tab       ? L"Got the map packs? Add them now, or any time later from Settings."
+                            : L"Point at a pack or button to see what it does.";
+      if (ctx.packs_on_disc)
+      {
+        EnableWindow(GetDlgItem(ui.window, kPackAddFiles), FALSE);
+        EnableWindow(GetDlgItem(ui.window, kPackCheck), FALSE);
+      }
 
       // Controls.
       Label(ui, kTabControls, L"Mouse sensitivity", x, 52, 130, true);
@@ -2529,7 +2556,8 @@ namespace pdz::settings_ui
       HWND update = Button(ui, -1, L"Open download page", 12, 494, kSideW - 24, kUpdateOpen,
                            L"Opens the new version's page on GitHub in your browser. Download it from there.");
       RefreshPacks(ui, false);
-      ShowTab(ui, packs_tab ? kTabPacks : kTabDisplay);
+      // After setup it opens on Map packs (their optional last step), unless the disc already has them.
+      ShowTab(ui, packs_tab && !ctx.packs_on_disc ? kTabPacks : kTabDisplay);
       ShowWindow(update, SW_HIDE); // until the update check finds a newer release
       if (REXCVAR_GET(pdz_update_check))
       {
@@ -2828,6 +2856,13 @@ namespace pdz::settings_ui
       at = semi == std::string::npos ? install.size() : semi + 1;
       if (one.empty())
       {
+        continue;
+      }
+      if (context.packs_on_disc)
+      {
+        g_summary += fmt::format("{}pdz_map_packs: not installed: the US Platinum Hits disc already has both map "
+                                 "packs ({})",
+                                 g_summary.empty() ? "" : "\n", one);
         continue;
       }
       int index = -1;

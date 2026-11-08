@@ -149,6 +149,7 @@ list(APPEND PERFECTDARKZERORECOMP_SOURCES
     src/mod/render/native/native_generate.cpp
     src/mod/render/native/native_pipeline_seed.cpp
     src/setup/first_run.cpp
+    src/setup/platinum.cpp
     src/setup/setup_window.cpp
     src/setup/theme.cpp
     src/setup/settings_window.cpp

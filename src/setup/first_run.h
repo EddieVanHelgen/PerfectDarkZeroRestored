@@ -38,4 +38,8 @@ namespace pdz::first_run
 
   // The first-run setup prepared the game files at this start (the settings window then opens on Map packs).
   bool SetupRanThisStart();
+
+  // The game files at `game_root` are the US Platinum Hits disc's (default.xex built for media ID 40C97944): both map
+  // packs are already on that disc, so the settings window shows them as included and doesn't install pack packages.
+  bool PlatinumDisc(const std::filesystem::path &game_root);
 } // namespace pdz::first_run

@@ -36,6 +36,7 @@ WRITTEN = {
                        "- the disc: a disc image (.iso) of any retail Perfect Dark Zero disc, or its extracted files;\r\n"
                        "- Title Update 3 (any disc's), copied from your own Xbox 360: its file name usually starts\r\n"
                        "  with TU_16L61UJ_. Its extracted files (default.xexp and Pdz\\...) work too.\r\n"
+                       "  The US Platinum Hits disc doesn't need Title Update 3, and its map packs are on the disc.\r\n"
                        "PDZ Restored checks them, prepares them once (a few minutes at most) and makes the renderer's\r\n"
                        "shaders from them. You can delete the disc image afterwards; the prepared files are in data\\.\r\n",
 }

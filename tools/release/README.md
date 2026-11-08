@@ -16,7 +16,7 @@ No game files come with it. You need your own copy of the game.
 - **Up to 31 bots** in a match, and 32-player Infection. Bots can use turrets. Facility and Ruin stay 8-player maps,
   as Rare made them.
 - Both official map packs, from your own copies. A known fault in some copies of Map Pack One is repaired when you
-  install it.
+  install it. The US Platinum Hits disc already has them.
 - A native Direct3D 12 renderer that matches the Xbox 360 picture, up to 4K.
 - 120 fps in the campaign, if your PC and screen can manage it. Multiplayer runs at 60 fps.
 - Built on Title Update 3, with all of Rare's fixes.
@@ -34,9 +34,10 @@ No game files come with it. You need your own copy of the game.
   can't run this version.
 - A graphics card that supports DirectX 12.
 - The Microsoft Visual C++ Redistributable (x64): https://aka.ms/vs/17/release/vc_redist.x64.exe
-- Your own Perfect Dark Zero disc, as a disc image (.iso) or its extracted files. Any of the five retail discs
-  works.
-- Title Update 3 for Perfect Dark Zero, copied from your own Xbox 360. Any disc's Title Update 3 works.
+- Your own Perfect Dark Zero disc, as a disc image (.iso) or its extracted files. Any of the five original retail
+  discs works, and so does the US Platinum Hits disc (see below).
+- Title Update 3 for Perfect Dark Zero, copied from your own Xbox 360. Any disc's Title Update 3 works. The US
+  Platinum Hits disc doesn't need it.
 - Optional: the two map packs, copied from your own Xbox 360. On the console they're in
   `Content\0000000000000000\4D5307D3\00000002`.
 
@@ -51,6 +52,14 @@ No game files come with it. You need your own copy of the game.
 5. The settings window opens. Add your map packs on the Map packs tab if you have them, then press Play.
 
 After the first start you can delete the disc image from the `game` folder if you want the space back.
+
+## US Platinum Hits
+
+The US Platinum Hits disc works as it is:
+
+1. Put its disc image (.iso), or the extracted disc, into the `game` folder.
+2. You don't need Title Update 3. If one is in the `game` folder, it isn't used for this disc.
+3. Both map packs are already on this disc. The Map packs tab shows them as included; there's nothing to add there.
 
 ## Settings worth knowing
 

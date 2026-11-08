@@ -2,4 +2,4 @@
 // title, the settings window title and the release zip (tools\release\stage_release.py reads it from here) show it.
 #pragma once
 
-#define PDZ_RESTORED_VERSION "0.9.2.1"
+#define PDZ_RESTORED_VERSION "0.9.3"

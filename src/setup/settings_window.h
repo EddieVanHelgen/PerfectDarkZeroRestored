@@ -19,6 +19,9 @@ namespace pdz::settings_ui
     std::filesystem::path logs_dir;      // logs\ next to the exe
     std::filesystem::path user_data_root;
     std::filesystem::path cache_root;
+    // The game files are the US Platinum Hits disc's (first_run::PlatinumDisc): both map packs are on the disc, so
+    // the Map packs tab shows them as included and no pack package is installed on top.
+    bool packs_on_disc = false;
   };
 
   enum class Choice

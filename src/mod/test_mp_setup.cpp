@@ -520,6 +520,37 @@ namespace
 
 void PdzTestMpSnapshotReset(); // pdz_test_mp_snapshot_s (below)
 
+// pdz_test_complete_mission (testing tool, off): the campaign level ends in success, the way Rare's level scripts end
+// one: bit 0x01 (COMPLETED) of the level state byte 82E426F8 (0x02 = failed, 0x40 = checkpoint; Datacore's handler
+// sets it at 822FFE1C). The game's own flow then scores the level, marks it complete in the profile and writes the
+// save (sub_8250E090 -> sub_82508AF0 -> WriteSaveGame sub_82510E50). Set once each time the cvar turns on (an input
+// script sets it once the level is in play); called from the game thread's music tick (music_restore.cpp).
+REXCVAR_DEFINE_BOOL(pdz_test_complete_mission, false, "Testing",
+                    "TESTING TOOL: when this turns on, the current campaign level ends in success as if every "
+                    "objective were done (Rare's COMPLETED bit), so a scripted run can finish a mission and the game "
+                    "saves its progress. For input scripts: 'cvar <t> pdz_test_complete_mission true' once in the level")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+void PdzTestCompleteMissionTick(uint8_t *base)
+{
+  static bool done = false;
+  if (!REXCVAR_GET(pdz_test_complete_mission))
+  {
+    done = false;
+    return;
+  }
+  if (done)
+  {
+    return;
+  }
+  done = true;
+  constexpr uint32_t kLevelState = 0x82E426F8;
+  const uint8_t before = base[kLevelState];
+  base[kLevelState] = uint8_t(before | 0x01);
+  REXLOG_INFO("pdz_test: complete mission (pdz_test_complete_mission): level state byte {:02X} -> {:02X} (COMPLETED)",
+              before, base[kLevelState]);
+}
+
 // cut_scenarios.cpp's hook on sub_82432678 (the match start's pass over the setup options): before and after.
 void PdzTestMpSetupMatchStart(PPCContext &ctx, uint8_t *base, bool after)
 {
@@ -543,6 +574,29 @@ void PdzTestMpSetupMatchStart(PPCContext &ctx, uint8_t *base, bool after)
               Get(ctx, base, kOptionPlayersMax), Get(ctx, base, kOptionBotLimit), Call(ctx, base, sub_8248C658, 0),
               mode, Get(ctx, base, mode == 1 ? kOptionDarkOpsScenario : kOptionScenario), MapName(ctx, base, level),
               level);
+  // The game's level list (TU3 82D6C2B4, what the DLC merge 8227A648 appends to: +0 count, +8 entries; an entry is
+  // name +0, id +4, kind +5), its multiplayer levels by name and id: a map listed twice shows here.
+  constexpr uint32_t kLevelList = 0x82D6C2B4;
+  const uint32_t count = Load32(base, kLevelList), entries = Load32(base, kLevelList + 8);
+  std::string mp;
+  uint32_t mp_count = 0;
+  for (uint32_t i = 0; IsGuestPointer(entries) && i < count && i < 256; ++i)
+  {
+    const uint32_t e = Load32(base, entries + i * 4);
+    if (!IsGuestPointer(e) || base[e + 5] != 1)
+    {
+      continue;
+    }
+    const uint32_t name = Load32(base, e);
+    std::string n;
+    for (uint32_t k = 0; IsGuestPointer(name) && k < 64 && base[name + k]; ++k)
+    {
+      n += char(base[name + k]);
+    }
+    mp += fmt::format(" {}({:02X})", n.rfind("aid_xml_level_", 0) == 0 ? n.substr(14) : n, base[e + 4]);
+    ++mp_count;
+  }
+  REXLOG_INFO("pdz_test_mp: level list: {} levels, {} multiplayer:{}", count, mp_count, mp);
 }
 
 // sub_823BD140(): the setup's load after Rare's defaults (sub_823BD8D8): the profile's saved setup for the mode /

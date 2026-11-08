@@ -2,6 +2,7 @@
 #include "first_run.h"
 
 #include "map_packs.h"
+#include "platinum.h"
 
 #include "setup_window.h"
 #include "theme.h"
@@ -100,6 +101,9 @@ namespace pdz::first_run
       const char *xexp_sha1; // nullptr: no Title Update 3 of its own known
       const wchar_t *tu_file; // nullptr: the same (its code is checked at the first load)
       bool not_supported = false; // a known disc whose code PDZ Restored can't run: refused before anything is copied
+      // A disc whose own code is translated at load (platinum.h) and needs no title update: any TU3 found is ignored.
+      // With pdz_platinum off it is not_supported again.
+      bool own_code = false;
     };
     constexpr Pressing kPressings[] = {
         {0x6A78E206, "0.0.0.4", "c24ae39fb18a22de1f18e61dc498393d25eadcaf", "b148ab898498a4dbdd494ddaf0e7d826612a6126",
@@ -111,10 +115,12 @@ namespace pdz::first_run
         {0x509DBB6B, "0.0.0.3", nullptr, "5978a7a0c72f4d9ac18d263d6a647fe1d6f3d9ff", L"TU_16L61UJ_000000C000000.00000000000O3"},
         {0x2B35C136, "0.0.0.2", nullptr, "e43476e35d3ba5b3cfda881c94b60fe0be0f6662", L"TU_16L61UJ_0000008000000.00000000000O2"},
         // The US "Platinum Hits" reprint (7 Nov 2026, a dump of a real disc; docs/RELEASE_FIRST_RUN.md "The US
-        // Platinum Hits"): known, NOT supported. Its own code is a full-size image like TU3's (SHA-1 e3048eb7...) but
-        // a different build (linked 12 Sep 2006, TU3's 19 Sep; the code moved from 8214030E on), and TU3's patch
-        // can't be applied to it (the SDK's patcher crashed). The map packs are merged into its game files.
-        {0x40C97944, "0.0.0.15", "29470e582ff8497f7465d475ed9b819389c83f12", nullptr, nullptr, true},
+        // Platinum Hits"). Its own code is a full-size image like TU3's (SHA-1 e3048eb7...) but a different build
+        // (linked 12 Sep 2006, TU3's 19 Sep; the code moved from 8214030E on), and TU3's patch can't be applied to it
+        // (the SDK's patcher crashed). Since route B (platinum.h) its data is laid out as TU3's at load, so it runs
+        // without a title update; with pdz_platinum off it is refused as in 0.9.2.1. The map packs are merged into its
+        // game files, and its own TU3-era data package (1726605008.pkg) is on the disc.
+        {0x40C97944, "0.0.0.15", "29470e582ff8497f7465d475ed9b819389c83f12", nullptr, nullptr, true, true},
     };
     // The message for a disc whose game code PDZ Restored can't run (setup's log path follows on its own line).
     constexpr const wchar_t *kNotSupported = L"This version of the game is not supported.";
@@ -805,7 +811,7 @@ namespace pdz::first_run
                           "default.xex SHA-1 {} ({})",
                           id.title_id, id.media_id, VersionText(id.version), xex_sha1, disc_path.string()));
       }
-      else if (pressing->not_supported)
+      else if (pressing->not_supported && !(pressing->own_code && platinum::Enabled()))
       {
         // Known, and known not to run: stopped before anything is copied (no title update is added to it).
         Trace(fmt::format("disc: media ID {:08X}, version {}, default.xex SHA-1 {}: a known disc that PDZ Restored "
@@ -813,6 +819,13 @@ namespace pdz::first_run
                           "from; Title Update 3 can't be applied to it)",
                           pressing->media_id, pressing->version, xex_sha1));
         Fail(kNotSupported);
+      }
+      else if (pressing->own_code)
+      {
+        Trace(fmt::format("disc: media ID {:08X}, version {}, default.xex SHA-1 {}: the US Platinum Hits. Its own code "
+                          "is a different build of Title Update 3's; its data is laid out as Title Update 3's at load "
+                          "(pdz_platinum), so no title update is used (any found is ignored)",
+                          pressing->media_id, pressing->version, xex_sha1));
       }
       else
       {
@@ -916,6 +929,13 @@ namespace pdz::first_run
         }
       }
       tus.insert(tus.begin(), disc_tus.begin(), disc_tus.end());
+      const bool own_code = pressing && pressing->own_code;
+      if (own_code && !tus.empty())
+      {
+        Trace("ignored for this disc: " + std::to_string(tus.size()) + " title update candidate(s), e.g. " +
+              tus.front().string());
+        tus.clear();
+      }
       const wchar_t *kTuFile = pressing ? pressing->tu_file : nullptr;
       int best_rank = -1;
       for (const fs::path &t : tus)
@@ -1111,6 +1131,14 @@ namespace pdz::first_run
 
       // 4. Extract, with progress.
       fs::remove(data_dir / "setup.json", ec); // a stamp only after everything is in place
+      if (own_code)
+      {
+        // Setup's own update folder from an earlier setup (another disc's Title Update 3 data) must not stay: this disc
+        // brings its own versions of those files, and the update folder would win over them.
+        const uint64_t gone = fs::remove_all(data_dir / "update", ec);
+        Trace("own-code disc: setup's update folder cleared (" + std::to_string(gone) + " entries)" +
+              (ec ? " - failed: " + ec.message() : std::string()));
+      }
       // An earlier setup's default.xexp must not stay: a disc checked at the first load is loaded without one.
       fs::remove(data_dir / "game" / "default.xexp", ec);
       fs::remove(data_dir / "pending" / "default.xexp", ec);
@@ -1319,6 +1347,27 @@ namespace pdz::first_run
                       has_xexp ? "with Title Update 3's default.xexp" : "the disc's own code, no title update",
                       kImageSha1, test_mismatch ? " - TESTING: reported as a mismatch (pdz_setup_test_image_mismatch)"
                                                 : ""));
+    // The US Platinum Hits disc, its data laid out as Title Update 3's by the loader step (platinum.h): its code bytes
+    // stay the disc's own (the recompiled code never runs them), so the check is the step's: the image as loaded was
+    // the disc's own (SHA-1), and everything outside the code is now TU3's (SHA-1).
+    if (platinum::GetState() == platinum::State::kTranslated && mapped == size && !test_mismatch)
+    {
+      Trace("image check at load: " + platinum::Summary());
+      REXLOG_INFO("pdz_setup: executable image checked: the US Platinum Hits disc's own code, its data translated into "
+                  "Title Update 3's layout (the one PDZ Restored is made from); no title update needed");
+      if (image_check == "pending")
+      {
+        set_field("image_check", "the US Platinum Hits: translated at load, checked");
+        write_stamp();
+        Trace("the US Platinum Hits disc's code, translated at load: no title update needed (none is used)");
+      }
+      CopyTraceToLogs();
+      return;
+    }
+    if (platinum::GetState() == platinum::State::kFailed)
+    {
+      Trace("image check at load: " + platinum::Summary());
+    }
     if (mapped == size && got == kImageSha1 && !test_mismatch)
     {
       REXLOG_INFO("pdz_setup: executable image checked (SHA-1 {}): the one PDZ Restored is made from{}", got,
@@ -1404,6 +1453,32 @@ namespace pdz::first_run
   }
 
   bool SetupRanThisStart() { return g_ran; }
+
+  bool PlatinumDisc(const fs::path &game_root)
+  {
+    // Only the header (its execution info is in the first few KB), not the whole 20 MB file.
+    std::ifstream f(game_root / "default.xex", std::ios::binary);
+    std::vector<uint8_t> head(0x10000);
+    if (!f)
+    {
+      return false;
+    }
+    f.read(reinterpret_cast<char *>(head.data()), std::streamsize(head.size()));
+    head.resize(size_t(f.gcount()));
+    const XexId id = ReadXexId(head);
+    if (!id.ok || id.title_id != kTitleId)
+    {
+      return false;
+    }
+    for (const Pressing &p : kPressings)
+    {
+      if (p.own_code && p.media_id == id.media_id)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
 
   void LogSummary()
   {
