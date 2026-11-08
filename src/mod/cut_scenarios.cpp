@@ -95,6 +95,26 @@
 #include "../game_cvars.h"
 #include "hook_profile.h" // pdz_hook_profile (must follow <rex/hook.h>)
 
+// Overnight 1108 A1 (sweep 7 Nov, FINDINGS R1-R3): bot reloads.
+REXCVAR_DEFINE_BOOL(pdz_fix_bot_fire_during_reload, true, "Gameplay",
+                    "Bug fix (ours): our bot code's trigger presses (Sabotage attacker jobs' trigger hold, Job 2a's "
+                    "passing shots) are held back while the bot's gun is reloading (fire state 10 / 14 / 18) or its "
+                    "clip is empty with ammo in reserve (3 s of that with no reload animation: the reload guard's "
+                    "refill). Before it, a "
+                    "press cancelled the reload one frame after it started, over and over (the Sabotage reload "
+                    "loop). Off = press whatever the gun does")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_bot_reload_guard, true, "Gameplay",
+                    "The reload guard, in every multiplayer match with bots (0.9.2 had it in Sabotage only, as "
+                    "pdz_sabotage_reload_guard, which still works as an alias: whichever of the two was set, by the "
+                    "higher source (command line > environment > settings file), wins; set in the same place, this "
+                    "one wins; read at each match start). A bot whose gun reloads for 5 s without finishing, or "
+                    "starts a second reload animation without a shot within 4 s (Sabotage) or a third (any mode), gets "
+                    "one step per trigger: the clip refilled "
+                    "Rare's AI way (when empty) and Rare's instant raise; then another gun he carries with ammo; then "
+                    "(Sabotage attacker jobs) the job's fallback. docs/TU3_BASE.md \"Sabotage: the reload guard\"")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REX_EXTERN(__imp__sub_823BB748);
 REX_EXTERN(__imp__sub_823BB828);
 REX_EXTERN(__imp__sub_823BB8B0);
@@ -4023,9 +4043,12 @@ void PdzDuelClampPlayers(PPCContext &ctx, uint8_t *base)
               changes.empty() ? "a supported count, nothing changed" : "corrected: ", changes);
 }
 
+void PdzBotReloadMatchStart(); // below, with the reload watch (A1: the last match's counts, then a clean watch)
+
 REX_HOOK_RAW(sub_82432678)
 {
   PPCContext saved = ctx;
+  PdzBotReloadMatchStart();
   ApplyDefaultBots(saved, base, "match start");
   PdzTestMpSetupMatchStart(saved, base, false);
   PdzDuelClampPlayers(saved, base);
@@ -9814,8 +9837,9 @@ namespace
     job.held_frames = job.pressed_frames = 0;
   }
 
-  // Reload watch (diagnostic, pdz_scenario_log; 0.9.2, release log 002: a
-  // bot "locked in a reload loop" at a Subway fuel dump). Every bot's hand
+  // Reload watch (0.9.2, release log 002: a bot "locked in a reload loop" at
+  // a Subway fuel dump; runs with pdz_scenario_log, or with the reload guard
+  // in any multiplayer match: its lines need the log). Every bot's hand
   // gun, every controller frame, whoever drives him (our jobs or Rare's
   // fights): a reload = the gun entering its reload animation (fire state
   // 10) or its clip rising (a refill, ours or Rare's), at most one per 0.75 s
@@ -9835,7 +9859,7 @@ namespace
     float pos[3] = {};              // position at pos_t (speed, every 0.5 s)
     double pos_t = 0.0;
     float speed = 0.0f;             // cm/s over the last 0.5 s
-    // The reload guard (pdz_sabotage_play_weapons): the current reload episode (fire states 10 / 14 / 18 with
+    // The reload guard (pdz_bot_reload_guard): the current reload episode (fire states 10 / 14 / 18 with
     // nothing in between but those), the last remedy and how far it has gone (0: none since his last shot).
     bool in_episode = false;
     double episode_start = 0.0;
@@ -9849,11 +9873,47 @@ namespace
     double anim_last = -100.0;
     double anim_first = -100.0;     // s (steady clock) of the first of them
     int remedy_anims = 0;
+    // A1 counts: the current reload animation (state 10 / 18): when it began, the clip then, cut by the guard.
+    double anim_start = -1.0;
+    uint32_t anim_clip = 0;
+    bool guard_cut = false;
+    // A1 (2): since when our hold has waited on an empty clip (with a reserve) with no reload animation (-1: not).
+    double empty_since = -1.0;
+    double seen = 0.0;              // s (steady clock) of the last frame the watch saw him with a gun in hand
   };
   std::unordered_map<uint32_t, ReloadWatch> g_reload_watch;
   int g_reload_loops = 0;         // RELOAD LOOP streaks this match (lines with "#n")
   int g_reload_guard[4] = {};     // remedies this round: refill + raise, another gun, the attacker's fallback, none possible
   bool ReloadGuardOn(const uint8_t *base);
+
+  // A1 (overnight 1108): per-match counts of every bot's reloads (all modes), for the tests and 092's numbers. A
+  // reload animation (fire state 10 / 18 entered) ends completed (the clip rose), cancelled (under 0.1 s, no refill:
+  // the R1 signature, a press one frame in), dropped (0.1 s or more, no refill: Rare's 10 -> 14 drop, R3) or cut by
+  // the guard. Stall = the time a reload episode (10 / 14 / 18) ran past 3.5 s (a normal bot reload is 2.4-2.9 s).
+  struct ReloadMatchCounts
+  {
+    int started = 0, completed = 0, cancelled = 0, dropped = 0, guard_cut = 0;
+    double stall_s = 0.0;
+    int long_episodes = 0;          // episodes over 3.5 s
+    int64_t held_reload = 0;        // trigger frames held back: gun in a reload state
+    int64_t held_empty = 0;         // ... clip empty with a reserve
+    int guard[4] = {};              // the guard's remedies (as g_reload_guard, the whole match)
+    int loops = 0;                  // RELOAD LOOP streaks
+    int empty_waits = 0;            // guard steps for an empty clip our hold waited on (A1 (2))
+    bool held_logged = false;       // the fix's first line this match
+    bool guard_logged = false;      // the guard's first line this match
+  };
+  ReloadMatchCounts g_reload_counts;
+  int g_reload_match = 0;           // matches seen (the count lines' "match n")
+  double g_reload_match_t0 = -1.0;  // s (steady clock) of this match's first watched frame
+  double g_reload_count_next = 0.0; // the next periodic count line
+  bool g_reload_guard_resolved = false;
+  bool g_reload_guard_value = true; // pdz_bot_reload_guard / pdz_sabotage_reload_guard, as resolved at match start
+  constexpr double kReloadGuardLimit = 5.0; // s in one reload episode before the guard steps in
+  constexpr double kReloadStallAfter = 3.5; // s of an episode counted as normal (the counts' stall)
+  constexpr double kEmptyHoldLimit = 3.0;   // s our hold may wait on an empty clip with no reload animation (A1 (2))
+  // A1 (2): bot -> s (steady clock) our trigger press last found his gun's clip empty with a reserve (BotFireHeld).
+  std::unordered_map<uint32_t, double> g_empty_hold;
   void ReloadGuardAct(PPCContext &ctx, uint8_t *base, uint32_t bot, uint32_t gun, ReloadWatch &w, const char *why);
   // What our Sabotage attacker job has him do (empty: no job, Rare's AI).
   std::string ReloadLoopJob(const uint8_t *base, uint32_t bot)
@@ -9880,6 +9940,33 @@ namespace
     return state == 10 || state == 14 || state == 18; // reloading, a reload waiting to start, the secondary's reload
   }
 
+  // A1: the match's reload counts in one line (the tests read it).
+  void ReloadCountsLine(const char *when)
+  {
+    const ReloadMatchCounts &c = g_reload_counts;
+    const double t = g_reload_match_t0 >= 0.0 ? WatchClock() - g_reload_match_t0 : 0.0;
+    REXLOG_INFO("pdz_scenario: bot reloads ({}, match {}, {:.0f} s): reload animations started {}, completed {}, "
+                "cancelled under 0.1 s {}, dropped {}, cut by the guard {}; stall {:.1f} s in {} episode(s) over {:.1f} s; "
+                "trigger frames held back {} (reload state {}, empty clip {}); reload guard: refill + raise {}, another "
+                "gun {}, attacker fallback {}, nothing possible {} (for an empty clip held {}); RELOAD LOOPs {}; fix {}, "
+                "guard {}",
+                when, g_reload_match, t, c.started, c.completed, c.cancelled, c.dropped, c.guard_cut, c.stall_s,
+                c.long_episodes, kReloadStallAfter, c.held_reload + c.held_empty, c.held_reload, c.held_empty, c.guard[0],
+                c.guard[1], c.guard[2], c.guard[3], c.empty_waits, c.loops, REXCVAR_GET(pdz_fix_bot_fire_during_reload) ? "on" : "off",
+                g_reload_guard_value ? "on" : "off");
+  }
+
+  // A reload episode ends (another state, a gun swap or the guard): its time past 3.5 s is stall.
+  void EndReloadEpisode(ReloadWatch &w, double now)
+  {
+    if (w.in_episode && now - w.episode_start > kReloadStallAfter)
+    {
+      g_reload_counts.stall_s += now - w.episode_start - kReloadStallAfter;
+      ++g_reload_counts.long_episodes;
+    }
+    w.in_episode = false;
+  }
+
   void ReloadWatchFrame(PPCContext &ctx, uint8_t *base, uint32_t bot)
   {
     const bool guard = ReloadGuardOn(base);
@@ -9897,13 +9984,81 @@ namespace
     const uint32_t clip = Clip(base, gun);
     const int state = FireState(base, gun);
     const double now = WatchClock();
+    // A1 (overnight 1108 a1b_sab_subway_s1: "stall 72 s in 7 episodes", no guard step, no long state in any
+    // trail): frames the watch didn't see (no gun in hand, dead) aren't a reload: an episode open across such a gap
+    // ends where the watch last saw it, for the stall count and the guard's 5 s alike.
+    if (w.in_episode && w.seen > 0.0 && now - w.seen > 0.5)
+    {
+      EndReloadEpisode(w, w.seen);
+    }
+    w.seen = now;
+    if (g_reload_match_t0 < 0.0)
+    {
+      g_reload_match_t0 = now;
+      g_reload_count_next = now + 30.0;
+    }
+    else if (now >= g_reload_count_next)
+    {
+      g_reload_count_next = now + 30.0;
+      if (Log())
+      {
+        ReloadCountsLine("so far");
+      }
+    }
     if (gun != w.gun)
     {
       w.gun = gun;
       w.clip = clip;
       w.state = state;
-      w.in_episode = false;
+      EndReloadEpisode(w, now);
+      w.anim_start = -1.0;
+      w.guard_cut = false;
+      w.empty_since = -1.0;
       return; // another gun: no shot / reload read across the swap (the streak goes on)
+    }
+    // A1 counts: a reload animation starts or ends.
+    const bool anim_now = state == 10 || state == 18, anim_before = w.state == 10 || w.state == 18;
+    if (anim_now && !anim_before)
+    {
+      ++g_reload_counts.started;
+      w.anim_start = now;
+      w.anim_clip = clip;
+      w.guard_cut = false;
+    }
+    else if (!anim_now && anim_before && w.anim_start >= 0.0)
+    {
+      if (w.guard_cut)
+      {
+        ++g_reload_counts.guard_cut;
+      }
+      else if (clip > w.anim_clip)
+      {
+        ++g_reload_counts.completed;
+      }
+      else if (now - w.anim_start < 0.1)
+      {
+        ++g_reload_counts.cancelled;
+      }
+      else
+      {
+        ++g_reload_counts.dropped;
+      }
+      w.anim_start = -1.0;
+      w.guard_cut = false;
+    }
+    // A1 (2): our hold waiting on an empty clip (logs 798 / 799: 1 -> 14 -> 1 every 0.7 s for up to 50 s, the
+    // reload asked for and never started; no animation, so the triggers below never saw it).
+    {
+      const auto eh = g_empty_hold.empty() ? g_empty_hold.end() : g_empty_hold.find(bot);
+      const bool our_empty_hold = eh != g_empty_hold.end() && now - eh->second < 0.5;
+      if (!our_empty_hold || anim_now || clip != 0)
+      {
+        w.empty_since = -1.0;
+      }
+      else if (w.empty_since < 0.0)
+      {
+        w.empty_since = now;
+      }
     }
     if (Log() && now - w.pos_t >= 0.5)
     {
@@ -9937,7 +10092,7 @@ namespace
     }
     else
     {
-      w.in_episode = false;
+      EndReloadEpisode(w, now);
     }
     if (clip < w.clip)
     {
@@ -9970,13 +10125,17 @@ namespace
       }
       ++w.streak;
       w.last = now;
-      if (Log() && w.streak > 3 && (w.logged == 0 || w.streak >= w.logged + 4))
+      if (w.streak > 3 && (w.logged == 0 || w.streak >= w.logged + 4))
       {
         if (w.logged == 0)
         {
-          ++g_reload_loops;
+          ++g_reload_loops; // counted with the log off too (A1: the match's count line)
+          ++g_reload_counts.loops;
         }
         w.logged = w.streak;
+      }
+      if (Log() && w.streak > 3 && w.logged == w.streak)
+      {
         REXLOG_INFO("pdz_scenario: reload watch: RELOAD LOOP #{}: {:08X} ({}) {} reloads in a row without a shot over {:.1f} s: "
                     "{}, clip {}, reserve {}, fire state {}{}; speed {:.0f} cm/s; last state changes:{}",
                     g_reload_loops, bot, BotName(base, bot), w.streak, now - w.first, GunText(base, gun), clip,
@@ -9994,18 +10153,28 @@ namespace
     }
     w.clip = clip;
     w.state = state;
-    // The guard: a reload that hasn't finished in 2 s (Rare's take about 1.5 s, log 138), or a second reload
-    // animation without a shot within 4 s of the first (a reload ends in a shot or a ready gun, not another reload),
-    // or a third at any pace. One step per new reload animation (or per 2 s of one that never ends), at least
-    // 1.5 s apart. (Overnight 092: at 3 s / the third animation, locks of 2-3 s were left.)
+    // The guard: a reload episode (10 / 14 / 18) that hasn't finished in 5 s (a normal bot reload takes 2.4-2.9 s,
+    // sweep S5: median 2.83 s in Killcount, 2.43 s in Protection, none under 2 s; 0.9.2's 2 s, from a wrong "about
+    // 1.5 s", cut ordinary reloads short: FINDINGS R2), or a second reload animation without a shot within 4 s of
+    // the first (a reload ends in a shot or a ready gun, not another reload), or a third at any pace. Outside
+    // Sabotage (Rare's fights only, where a reload dropped once and restarted is ordinary) only the third. One step
+    // per new reload animation (or per 5 s of one that never ends), at least 1.5 s apart.
     if (guard && now - w.remedy_at >= 1.5)
     {
-      const bool long_one = w.in_episode && now - w.episode_start >= 2.0;
-      const bool again = w.anims > w.remedy_anims && (w.anims >= 3 || (w.anims >= 2 && now - w.anim_first <= 4.0));
-      if (long_one || again)
+      const bool long_one = w.in_episode && now - w.episode_start >= kReloadGuardLimit;
+      const bool two_fast = w.anims >= 2 && now - w.anim_first <= 4.0 && SabotageMode(base) != 0;
+      const bool again = w.anims > w.remedy_anims && (w.anims >= 3 || two_fast);
+      const bool empty_wait = w.empty_since >= 0.0 && now - w.empty_since >= kEmptyHoldLimit;
+      if (long_one || again || empty_wait)
       {
+        if (!long_one && !again)
+        {
+          ++g_reload_counts.empty_waits;
+        }
         ReloadGuardAct(ctx, base, bot, gun, w,
-                       long_one ? "a reload not finished in 2 s" : "reload animations in a row without a shot");
+                       long_one ? "a reload not finished in 5 s"
+                       : again  ? "reload animations in a row without a shot"
+                                : "an empty clip our trigger hold waited on 3 s with no reload animation");
       }
     }
   }
@@ -10144,9 +10313,86 @@ namespace
   //    nothing more (logged).
   void StoreReserve(uint8_t *base, uint32_t gun, uint32_t reserve); // below
 
+  // pdz_bot_reload_guard, or its 0.9.2 name pdz_sabotage_reload_guard: the one set by the higher source wins (both
+  // at the same source, or neither set: the new name). Resolved at match start (a registry lookup by name: never
+  // per frame) and at the first use.
+  void ResolveReloadGuard()
+  {
+    using rex::cvar::GetFlagSource;
+    const auto now_src = GetFlagSource("pdz_bot_reload_guard");
+    const auto old_src = GetFlagSource("pdz_sabotage_reload_guard");
+    g_reload_guard_value = int(old_src) > int(now_src) ? REXCVAR_GET(pdz_sabotage_reload_guard)
+                                                       : REXCVAR_GET(pdz_bot_reload_guard);
+    g_reload_guard_resolved = true;
+  }
+
+  // A1 (FINDINGS R3): every multiplayer match with bots (the watch only looks at bots), not only Sabotage: Rare's
+  // own 10 -> 14 -> 10 stall happens in any mode. Game type at [82D6BFD8] +40: 2 / 3 = multiplayer (Rare's reload
+  // request 8223AA00 tests 2; mp_announcer.cpp / test_mp_setup.cpp read 2 / 3 as multiplayer).
   bool ReloadGuardOn(const uint8_t *base)
   {
-    return REXCVAR_GET(pdz_sabotage_reload_guard) && REXCVAR_GET(pdz_sabotage_play_weapons) && SabotageBotsOn(base);
+    if (!g_reload_guard_resolved)
+    {
+      ResolveReloadGuard();
+    }
+    if (!g_reload_guard_value)
+    {
+      return false;
+    }
+    const uint32_t game = Load32(base, 0x82D6BFD8);
+    if (!IsGuestPointer(game))
+    {
+      return false;
+    }
+    const uint32_t type = Load32(base, game + 40);
+    return type == 2 || type == 3;
+  }
+
+  // A1 (overnight 1108, FINDINGS R1, pdz_fix_bot_fire_during_reload): our trigger presses (an attacker job's hold,
+  // HoldTrigger; Job 2a's passing shots) went in every controller frame whatever the gun did, and a press cancelled
+  // the reload one frame after it started (overnight 092's guard-off logs: 448 of 467 reload starts under our
+  // attacker jobs, 20 of 20 for Sabotage bots on Rare's goals, ended in 0.03 s, 10 -> 1; none in modes where we
+  // press nothing). Now the press for that hand is held back while its gun is in a reload state (10 / 14 / 18), or
+  // its clip is empty with rounds in reserve. An empty clip is noted (g_empty_hold): when our hold waits on one 3 s
+  // with no reload animation, the reload guard's step 1 refills it Rare's AI way (ReloadWatchFrame; logs 798 / 799
+  // saw such guns go 1 -> 14 -> 1 every 0.7 s for up to 50 s: Rare's reload request, never started). The first
+  // version pressed button 14 every 1.5 s here instead; dropped (the 0.7 s asking isn't on its 1.5 s beat, and
+  // the guard's refill ends the wait anyway). Empty hands (melee) and a gun with no reserve press as before. Returns
+  // true when the press is held back. Hot path: plain guest reads; one log line the first time per match, the
+  // empty-clip map touched only with an empty clip.
+  bool BotFireHeld(PPCContext &ctx, uint8_t *base, uint32_t bot, int hand)
+  {
+    (void)ctx;
+    if (!REXCVAR_GET(pdz_fix_bot_fire_during_reload))
+    {
+      return false;
+    }
+    const uint32_t gun = Load32(base, bot + (hand ? kHand1 : kHand0));
+    if (!IsWeapon(base, gun))
+    {
+      return false;
+    }
+    const int state = FireState(base, gun);
+    const bool reloading = ReloadState(state);
+    const uint32_t clip = Clip(base, gun);
+    const bool empty = clip == 0 && Reserve(base, gun) > 0;
+    if (empty)
+    {
+      g_empty_hold[bot] = WatchClock(); // the guard's empty-clip trigger (ReloadWatchFrame)
+    }
+    if (!reloading && !empty)
+    {
+      return false;
+    }
+    ++(reloading ? g_reload_counts.held_reload : g_reload_counts.held_empty);
+    if (!g_reload_counts.held_logged)
+    {
+      g_reload_counts.held_logged = true;
+      REXLOG_INFO("pdz_fix: bot fire during reload: a trigger press held back (first this match): {:08X} ({}) hand {}, "
+                  "{}, fire state {}, clip {}, reserve {}",
+                  bot, BotName(base, bot), hand, GunText(base, gun), state, clip, Reserve(base, gun));
+    }
+    return true;
   }
 
   void ReloadGuardAct(PPCContext &ctx, uint8_t *base, uint32_t bot, uint32_t gun, ReloadWatch &w, const char *why)
@@ -10159,7 +10405,12 @@ namespace
     w.remedy_at = now;
     w.remedy_streak = w.streak;
     w.remedy_anims = w.anims;
-    w.in_episode = false;
+    EndReloadEpisode(w, now); // A1: its time past 3.5 s counts as stall
+    w.empty_since = -1.0;
+    if (w.anim_start >= 0.0)
+    {
+      w.guard_cut = true; // A1: the animation this step ends counts as cut by the guard
+    }
     ++w.remedy_level;
     const auto a = g_sabotage_attackers.find(bot);
     SabotageAttacker *job = a != g_sabotage_attackers.end() ? &a->second : nullptr;
@@ -10246,11 +10497,19 @@ namespace
       did = "no other gun with ammo: nothing more (Rare's fight)";
     }
     ++g_reload_guard[step];
+    ++g_reload_counts.guard[step];
     if (Log())
     {
       REXLOG_INFO("pdz_scenario: reload guard: {:08X} ({}) step {}: {}: {}; gun {}{}", bot, BotName(base, bot),
                   w.remedy_level, why, did, GunText(base, gun), ReloadLoopJob(base, bot));
     }
+    if (!g_reload_counts.guard_logged) // once a match, with or without the log (the tests' proof)
+    {
+      REXLOG_INFO("pdz_fix: bot reload guard (pdz_bot_reload_guard): first step this match: {:08X} ({}) step {}: {}: "
+                  "{}; gun {}",
+                  bot, BotName(base, bot), w.remedy_level, why, did, GunText(base, gun));
+    }
+    g_reload_counts.guard_logged = true;
   }
 
   // Rare's reload, as the gun's own fire step runs it every frame
@@ -12351,9 +12610,11 @@ namespace
       {
         // Log 140: the reload animation completes while a bot walks or
         // fights (18 refills on Desert, all "on the way" / fighting) and
-        // never while it stands at its spot (the one-frame 1 <-> 10 flips).
-        // Not over a reload in progress (state 10): a real one refills at
-        // ~1.5 s and would be charged twice.
+        // never while it stands at its spot (the one-frame 1 <-> 10 flips:
+        // our own trigger press cancelling it, sweep R1, now held back by
+        // pdz_fix_bot_fire_during_reload). Not over a reload in progress
+        // (state 10): a real one refills in 2.4-2.9 s (sweep S5) and would
+        // be charged twice.
         ForceReload(ctx, base, bot, job, gun, hand);
         return;
       }
@@ -12459,6 +12720,25 @@ namespace
     FireLog(base, bot, job, gun);
   }
 } // namespace
+
+// A1 (overnight 1108): a match starts (sub_82432678): the last match's reload counts in one line (with or without
+// pdz_scenario_log: one line a match), then a clean watch (0.9.2 cleared it only at a Sabotage round end, so other
+// modes carried one match's streaks into the next: FINDINGS R3), and the guard's switch read again.
+void PdzBotReloadMatchStart()
+{
+  if (g_reload_match_t0 >= 0.0)
+  {
+    ReloadCountsLine("match over");
+  }
+  ++g_reload_match;
+  g_reload_counts = {};
+  g_reload_match_t0 = -1.0;
+  g_reload_watch.clear();
+  g_empty_hold.clear();
+  g_reload_loops = 0;
+  std::fill(std::begin(g_reload_guard), std::end(g_reload_guard), 0);
+  ResolveReloadGuard();
+}
 
 // --- Pad-link diagnostics (read-only; pdz_sabotage_bots + pdz_scenario_log,
 // any mode; docs/TU3_BASE.md, "CP2 step 2: attackers") ---
@@ -23449,7 +23729,8 @@ REX_HOOK_RAW(sub_82273B50)
     if (p != g_passing.end() && p->second.prop && p->second.hand >= 0 && now < p->second.fire_until)
     {
       const auto a = g_sabotage_attackers.find(bot);
-      if (a == g_sabotage_attackers.end() || a->second.fire_hand < 0 || now >= a->second.fire_until)
+      if ((a == g_sabotage_attackers.end() || a->second.fire_hand < 0 || now >= a->second.fire_until) &&
+          !BotFireHeld(ctx, base, bot, p->second.hand)) // A1: not into his own reload
       {
         PPCContext saved = ctx;
         rex::CallFrame frame(saved);
@@ -23476,7 +23757,8 @@ REX_HOOK_RAW(sub_82273B50)
     {
       SabotageAttacker &job = a->second;
       ++job.held_frames;
-      if (!job.pulse || job.held_frames % 5 < 3)
+      // A1: the trigger (not the reload button) held back while his gun reloads or waits to (BotFireHeld).
+      if ((!job.pulse || job.held_frames % 5 < 3) && (job.reload || !BotFireHeld(ctx, base, bot, job.fire_hand)))
       {
         ++job.pressed_frames;
         if (bot == bot_watch::Watched())

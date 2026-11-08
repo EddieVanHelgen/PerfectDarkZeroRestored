@@ -428,8 +428,10 @@ pdz_sabotage_play_weapons = true
 pdz_sabotage_play_shop = true
 pdz_sabotage_play_team = true
 pdz_sabotage_play_squads = true
-# 0.9.2: a gun stuck reloading gets a ready gun, then another gun (needs pdz_sabotage_play_weapons).
-pdz_sabotage_reload_guard = true
+# 0.9.2 (0.9.2.1: every multiplayer mode with bots): a gun stuck reloading gets a ready gun, then another gun.
+pdz_bot_reload_guard = true
+# 0.9.2.1: bots don't press fire while their gun is reloading or its clip is empty with ammo left.
+pdz_fix_bot_fire_during_reload = true
 pdz_ptf_objective_focus = true
 pdz_protection_objective_focus = true
 # 0.9.2: Protection helpers spread out (3 escorts, a guard ring, the rest on the approaches).

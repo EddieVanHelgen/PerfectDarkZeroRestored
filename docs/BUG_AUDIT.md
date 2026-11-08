@@ -333,6 +333,9 @@ or the AI clock. Only these are counted in frames:
 | FR10 | Enemy sight raycasts: 5 per frame (AI12) | 150/s | 300/s | low (a guard can register "visible" a few frames sooner; reactions are throttled to the AI clock) | fine |
 | FR11 | Hearing: 2 listeners checked per frame; a new noise is held at full strength for 2 rounds before it decays | longer hold | half as long | none (every listener still gets one full-strength check) | fine |
 | FR12 | Per-frame re-rolls after a failed dodge (AI22); a discarded rand() in task `821B5FD0` | - | twice as many draws | none | fine |
+| FR13 | Bridge's ship turret (DP_Turret `sub_825D0B28`): yaw / pitch += gap x 0.1 / 0.2 per frame (`825D1298` / `825D12A0` / `825D1338`, centre `825D150C` / `825D1514`); its waits use dt | ~1.9 s turning per shot from 45 deg | ~1.0 s (0.5 s at 120) | medium (fires sooner, aims better) | bug. *Built 2026-11-08 (untested): `pdz_fix_turret_rate` (on), `rate_fixes.cpp`* |
+| FR14 | Gun idle fidgets (`sub_824FA578`): `rand01() < 0.005` per frame while standing with no gun animation (`824FAA80`-`824FAA90`), slots 10-13 | one every ~6.7 s | ~3.3 s (1.7 s at 120) | medium (seen whenever you stand still) | bug. *Built 2026-11-08 (untested): `pdz_fix_idle_fidget_rate` (on)* |
+| FR15 | Screen flicker of framebuffer-effect modes 10 / 13 (`sub_825F5290`): `rand01() < 0.01` per frame while no flicker runs (`825F5498`-`825F54B4`); its decay uses dt. Modes come from the camera's `PDZ_FramebufferFx` channel (`8220E740`); which scenes use 10 / 13 not yet found | ~0.3 flickers/s | ~0.6/s (1.2 at 120) | low (scenes unknown) | bug. *Built 2026-11-08 (untested): `pdz_fix_screen_flicker_rate` (on)* |
 
 ## Tuning data
 

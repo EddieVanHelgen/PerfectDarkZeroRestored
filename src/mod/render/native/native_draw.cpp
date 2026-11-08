@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <intrin.h> // __rdtsc (pdz_native_draw_timing)
+#include <mutex>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -132,6 +133,23 @@ REXCVAR_DEFINE_BOOL(pdz_native_indexed_up, true, "Render",
 REXCVAR_DECLARE(bool, pdz_native_texture_lock_tables); // native_textures.cpp: OnTextureRewritten
 REXCVAR_DECLARE(bool, pdz_fix_water_loop); // game_cvars.cpp: the ripple stack's layers wrap (MarkWaterLoop)
 REXCVAR_DECLARE(bool, pdz_game_fixes);
+REXCVAR_DECLARE(bool, pdz_fix_short_stacks); // game_cvars.cpp: proven short animated stacks wrap too (ShortStackMask)
+REXCVAR_DEFINE_STRING(pdz_fix_short_stacks_extra, "", "Testing",
+                      "Test aid for pdz_fix_short_stacks: more stacks to wrap besides the built-in list, as "
+                      "'<pixel shader hash, 16 hex>:<slot>:<v|p><register>' items separated by commas (e.g. "
+                      "'1991475BAD6C860C:0:v19'): that slot's layers wrap while the named constant's .w (the layer "
+                      "coordinate Rare animates) is not exactly 0. Read once a frame.");
+REXCVAR_DEFINE_INT32(pdz_stack_layer_log, 0, "Render",
+                     "Diagnostic (stacked-texture loops, overnight 1108 A6): every N device frames (0 = off) one "
+                     "'pdz_stack_layer:' line per stacked texture drawn in that frame (pixel shader + slot + texture "
+                     "address, first draw only): layers, the fetch's clamp_z, the vertex shader and every non-zero .w "
+                     "of VS c0..c63 and PS c0..c31 (a row (0, 0, z, w) is marked '*z'), to see which layer coordinates "
+                     "Rare animates and whether they leave the stack's range. Works with the null GPU backend and the "
+                     "record thread (reads the device constant store, not the upload heap).");
+REXCVAR_DEFINE_INT32(pdz_stack_layer_log_from, 0, "Render",
+                     "Diagnostic: the first device frame pdz_stack_layer_log may log.");
+REXCVAR_DEFINE_INT32(pdz_stack_layer_log_lines, 20000, "Render",
+                     "Diagnostic: at most this many pdz_stack_layer lines in a session.");
 REXCVAR_DEFINE_INT32(pdz_native_split_tables, 1, "Render",
                      "Native renderer, split screen (stage1/subagents/split.md): the per-frame SRV descriptor tables are "
                      "keyed by the draw's shaders and raw fetch constants, so a draw of player 2's pass found player "
@@ -1162,6 +1180,7 @@ namespace pdz::native
     } g_ei;
 
     void LogWatchStats(uint64_t frames); // pdz_native_geometry_watch (defined after the watch code)
+    void ShortStacksNewFrame(uint64_t frame); // pdz_fix_short_stacks / pdz_stack_layer_log (after WaterLoopMask)
 
     void LogEiStats()
     {
@@ -1222,6 +1241,7 @@ namespace pdz::native
       ShaderCache::Get().OnFrame(frame);
       g_geometry.Maintain(frame);
       drawdump::NewFrame(); // pdz_native_draw_dump (re-reads its cvars; a bool test per draw while off)
+      ShortStacksNewFrame(frame); // pdz_fix_short_stacks / pdz_stack_layer_log (re-reads their cvars)
       const int32_t every = REXCVAR_GET(pdz_native_log_frames);
       if (every > 0 && frame % uint64_t(every) == 0 && frame != 0)
       {
@@ -1410,14 +1430,254 @@ namespace pdz::native
     std::atomic<uint64_t> g_water_loop_draws{0};
     constexpr uint32_t kWaterLoopMinLayers = 8;
 
-    uint32_t WaterLoopMask(const shadow::DrawRecord &r, const NativeShader *ps)
+    // pdz_fix_short_stacks (overnight 1108 A6, Sweep T1 / S1 candidate 1): stacks of 2-7 layers keep the clamp
+    // (a static 2-layer blend sampled at w = 0 must stay on layer 0), EXCEPT the ones a pdz_stack_layer_log dump proved
+    // Rare animates as a blended loop (TexAnim, w wrapped into [-1/N, 1 - 1/N) by 82760FC4): with the clamp their
+    // first frame was held for 3/4 of the period (N = 2), the second never shown on its own, then a snap back. Each
+    // entry: the pixel shader, its slot, and the constant whose .w is that slot's layer coordinate (from the dump);
+    // a draw whose .w is exactly 0 (a static material sharing the shader) is left clamped.
+    struct ShortStack
     {
-      if (!ps || ps->array_slots == 0 || !REXCVAR_GET(pdz_fix_water_loop) || !REXCVAR_GET(pdz_game_fixes))
+      uint64_t ps_hash;
+      uint32_t slot;
+      bool ps_reg; // the register is a PS constant (else VS)
+      uint32_t reg;
+      const char *what;
+    };
+    constexpr ShortStack kShortStacks[] = {
+        // Datacore (and River, S1): a 2-frame alpha-tested quad (VS 61BBF23A). Overnight 1108 dumps a6_dc_dump2 /
+        // a6_te_dump2: VS c19 = (0, 0, 1, w), w climbing and wrapped from about 0.5 to -0.5 (Rare's [-1/N, 1 - 1/N)
+        // for N = 2) 28 and 38 times in the two runs; with the clamp its second frame never showed on its own.
+        {0xDC005D2B09D0303Full, 0, false, 19, "Datacore / River 2-frame quad, VS c19.w loops -0.5..0.5"},
+        // Trinity Escape (dump a6_te_dump3, 120 fps): 2-frame repeat stacks whose VS c19 = (0, 0, 1, w) loops in
+        // Rare's -0.5..0.5 (every sample moving, none exactly 0), many on the same 256x256x2 texture as DC005D2B
+        // (lighting variants of one material), and the clamp_z 0 uses of the cyan ring's shaders (CAFD0BC8 /
+        // 131B14E8; their clamp_z 1 512x32 uses keep w in 0.23..0.85 and are left alone: the rule needs repeat).
+        // c19 is the texcoord .z each of these vertex shaders writes (translated HLSL: o0/o3/o4.z = dot(.., c[19])).
+        {0x034A4C53233F2826ull, 0, false, 19, "Trinity Escape 2-frame stack, VS c19.w loops -0.5..0.5"},
+        {0x131B14E81BD0F8CAull, 0, false, 19, "Trinity Escape 2-frame stack (t0), VS c19.w loops -0.5..0.5"},
+        {0x131B14E81BD0F8CAull, 4, false, 19, "Trinity Escape 2-frame stack (t4), VS c19.w loops -0.5..0.5"},
+        {0x254FD7CACB28CAA9ull, 0, false, 19, "Trinity Escape 2-frame stack, VS c19.w loops -0.5..0.5"},
+        {0x3F4CABBA957622CFull, 0, false, 19, "Trinity Escape / River 2-frame stack (t0), VS c19.w loops -0.5..0.5"},
+        {0x3F4CABBA957622CFull, 1, false, 19, "Trinity Escape / River 2-frame stack (t1), VS c19.w loops -0.5..0.5"},
+        {0x4844C283BC5A7F27ull, 2, false, 19, "Trinity Escape / River 2-frame stack (t2), VS c19.w loops -0.5..0.5"},
+        {0x4844C283BC5A7F27ull, 3, false, 19, "Trinity Escape / River 2-frame stack (t3), VS c19.w loops -0.5..0.5"},
+        {0xB26D03C5BB02A137ull, 0, false, 19, "Trinity Escape / Datacore 2-frame stack, VS c19.w loops -0.5..0.5"},
+        {0xC06C4F4590D601F2ull, 0, false, 19, "Trinity Escape 2-frame stack, VS c19.w loops -0.5..0.5"},
+        {0xCAFD0BC8EFA10DB7ull, 0, false, 19, "Trinity Escape 2-frame stack (t0), VS c19.w loops -0.5..0.5"},
+        {0xCAFD0BC8EFA10DB7ull, 5, false, 19, "Trinity Escape 2-frame stack (t5), VS c19.w loops -0.5..0.5"},
+        {0xE5D38E6AECDE8FFFull, 5, false, 19, "Trinity Escape / Datacore 2-frame stack, VS c19.w loops -0.5..0.5"},
+    };
+
+    struct ShortStackState
+    {
+      bool on = false;          // pdz_fix_short_stacks && pdz_game_fixes, read once a frame
+      std::string extra_text;   // pdz_fix_short_stacks_extra as last parsed
+      std::vector<ShortStack> extra;
+      int32_t log_every = 0;    // pdz_stack_layer_log
+      bool log_frame = false;   // this frame is a pdz_stack_layer_log frame
+      uint64_t frame = 0;
+      uint64_t last_log_frame = 0;
+      uint32_t log_lines = 0;
+      std::vector<uint64_t> logged_keys; // this log frame: (ps hash ^ slot ^ texture address) already logged
+      std::mutex wrapped_mutex;
+      std::vector<std::pair<uint64_t, uint32_t>> wrapped; // (ps hash, slot) whose first wrap was logged
+    } g_short;
+
+    void ShortStacksNewFrame(uint64_t frame)
+    {
+      ShortStackState &s = g_short;
+      s.on = REXCVAR_GET(pdz_fix_short_stacks) && REXCVAR_GET(pdz_game_fixes);
+      s.frame = frame;
+      if (s.on)
+      {
+        const std::string text = REXCVAR_GET(pdz_fix_short_stacks_extra);
+        if (text != s.extra_text)
+        {
+          s.extra_text = text;
+          s.extra.clear();
+          size_t at = 0;
+          while (at < text.size())
+          {
+            size_t end = text.find(',', at);
+            if (end == std::string::npos)
+            {
+              end = text.size();
+            }
+            const std::string item = text.substr(at, end - at);
+            at = end + 1;
+            uint64_t hash = 0;
+            unsigned slot = 0, reg = 0;
+            char stage = 0;
+            if (std::sscanf(item.c_str(), " %llx:%u:%c%u", reinterpret_cast<unsigned long long *>(&hash), &slot,
+                            &stage, &reg) == 4 &&
+                slot < 32 && (stage == 'v' || stage == 'p') && reg < 256)
+            {
+              s.extra.push_back({hash, slot, stage == 'p', reg, "pdz_fix_short_stacks_extra"});
+            }
+            else if (!item.empty())
+            {
+              REXLOG_WARN("pdz_fix_short_stacks_extra: item '{}' not understood (want PSHASH:slot:v19)", item);
+            }
+          }
+          REXLOG_INFO("pdz_fix_short_stacks_extra: {} extra stack(s)", s.extra.size());
+        }
+      }
+      s.log_every = REXCVAR_GET(pdz_stack_layer_log);
+      s.log_frame = false;
+      if (s.log_every > 0 && frame >= uint64_t(std::max(0, REXCVAR_GET(pdz_stack_layer_log_from))) &&
+          s.log_lines < uint32_t(std::max(0, REXCVAR_GET(pdz_stack_layer_log_lines))) &&
+          (s.last_log_frame == 0 || frame >= s.last_log_frame + uint64_t(s.log_every)))
+      {
+        s.log_frame = true;
+        s.last_log_frame = frame;
+        s.logged_keys.clear();
+      }
+    }
+
+    // A float4 register from the device constant store (big-endian guest layout; dev_ptr = the device struct or the
+    // record thread's mirror of it).
+    void DeviceConst(const uint8_t *dev_ptr, uint32_t offset, uint32_t reg, float out[4])
+    {
+      for (uint32_t i = 0; i < 4; ++i)
+      {
+        const uint8_t *p = dev_ptr + offset + 16 * reg + 4 * i;
+        const uint32_t v = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+        std::memcpy(&out[i], &v, 4);
+      }
+    }
+
+    // pdz_stack_layer_log: one line per (pixel shader, slot, texture) in a log frame.
+    void LogStackLayers(const shadow::DrawRecord &r, const NativeShader *ps, const NativeShader *vs,
+                        const uint8_t *dev_ptr)
+    {
+      ShortStackState &s = g_short;
+      if (!dev_ptr || s.log_lines >= uint32_t(std::max(0, REXCVAR_GET(pdz_stack_layer_log_lines))))
+      {
+        return;
+      }
+      std::string slots;
+      uint64_t key = ps->hash;
+      for (const ShaderTexture &t : ps->textures)
+      {
+        if (t.slot < 32 && ((ps->array_slots >> t.slot) & 1u))
+        {
+          const FetchDecoded f = DecodeFetch(r.fetch_be + t.slot * shadow::dev::kFetchConstantBytes);
+          if (f.dimension == 1 && f.depth > 1)
+          {
+            slots += fmt::format(" t{} {}L z{} {}x{} @{:08X}", t.slot, f.depth, f.clamp_z, f.width, f.height,
+                                 f.base_address);
+            key = key * 1000003ull ^ (uint64_t(f.base_address) << 5 | t.slot);
+          }
+        }
+      }
+      if (slots.empty())
+      {
+        return;
+      }
+      for (uint64_t k : s.logged_keys)
+      {
+        if (k == key)
+        {
+          return;
+        }
+      }
+      if (s.logged_keys.size() >= 512)
+      {
+        return;
+      }
+      s.logged_keys.push_back(key);
+      std::string consts;
+      auto add = [&](char stage, uint32_t offset, uint32_t count) {
+        for (uint32_t reg = 0; reg < count; ++reg)
+        {
+          float c[4];
+          DeviceConst(dev_ptr, offset, reg, c);
+          if (c[0] == 0.0f && c[1] == 0.0f && c[2] != 0.0f)
+          {
+            consts += fmt::format(" {}{}*{:.4g}={:.5g}", stage, reg, c[2], c[3]);
+          }
+          else if (c[3] != 0.0f)
+          {
+            consts += fmt::format(" {}{}={:.5g}", stage, reg, c[3]);
+          }
+        }
+      };
+      add('v', shadow::dev::kVsAluConstants, 64);
+      add('p', shadow::dev::kPsAluConstants, 32);
+      ++s.log_lines;
+      REXLOG_INFO("pdz_stack_layer: f{} ps {:016X} vs {:016X}{} |{}", s.frame, ps->hash, vs ? vs->hash : 0ull, slots,
+                  consts);
+    }
+
+    // The slots of the short-stack list (and pdz_fix_short_stacks_extra) that wrap for this draw.
+    uint32_t ShortStackMask(const shadow::DrawRecord &r, const NativeShader *ps, const uint8_t *dev_ptr)
+    {
+      ShortStackState &s = g_short;
+      uint32_t mask = 0;
+      auto check = [&](const ShortStack &e) {
+        if (e.ps_hash != ps->hash || !dev_ptr || !((ps->array_slots >> e.slot) & 1u))
+        {
+          return;
+        }
+        const FetchDecoded f = DecodeFetch(r.fetch_be + e.slot * shadow::dev::kFetchConstantBytes);
+        if (f.dimension != 1 || f.depth < 2 || f.depth >= kWaterLoopMinLayers || f.clamp_z != 0)
+        {
+          return; // not a short repeat stack in this draw (8+ layers: WaterLoopMask's rule already wraps them)
+        }
+        float c[4];
+        DeviceConst(dev_ptr, e.ps_reg ? shadow::dev::kPsAluConstants : shadow::dev::kVsAluConstants, e.reg, c);
+        if (c[3] == 0.0f)
+        {
+          return; // w exactly 0: a static material on the same shader stays on layer 0
+        }
+        mask |= 1u << e.slot;
+        std::lock_guard<std::mutex> lock(s.wrapped_mutex);
+        for (const auto &w : s.wrapped)
+        {
+          if (w.first == e.ps_hash && w.second == e.slot)
+          {
+            return;
+          }
+        }
+        if (s.wrapped.size() < 64)
+        {
+          s.wrapped.emplace_back(e.ps_hash, e.slot);
+          REXLOG_INFO("pdz_fix_short_stacks: ps {:016X} t{} ({} layers, {}x{}) wraps its layers (layer coordinate "
+                      "{}c{}.w = {:.4g}; {})",
+                      e.ps_hash, e.slot, f.depth, f.width, f.height, e.ps_reg ? "PS " : "VS ", e.reg, c[3],
+                      e.what ? e.what : "");
+        }
+      };
+      for (const ShortStack &e : kShortStacks)
+      {
+        check(e);
+      }
+      for (const ShortStack &e : s.extra)
+      {
+        check(e);
+      }
+      return mask;
+    }
+
+    uint32_t WaterLoopMask(const shadow::DrawRecord &r, const NativeShader *ps, const NativeShader *vs,
+                           const uint8_t *dev_ptr)
+    {
+      if (!ps || ps->array_slots == 0)
       {
         return 0;
       }
-      uint32_t mask = 0, clamped = 0;
-      uint32_t depth_of[32] = {};
+      if (g_short.log_frame)
+      {
+        LogStackLayers(r, ps, vs, dev_ptr);
+      }
+      const uint32_t short_mask = g_short.on ? ShortStackMask(r, ps, dev_ptr) : 0;
+      if (!REXCVAR_GET(pdz_fix_water_loop) || !REXCVAR_GET(pdz_game_fixes))
+      {
+        return short_mask;
+      }
+      uint32_t mask = short_mask, clamped = 0;
+      uint32_t depth_of[32] = {}, clamp_z_of[32] = {};
       for (const ShaderTexture &t : ps->textures)
       {
         if (t.slot < 32 && ((ps->array_slots >> t.slot) & 1u))
@@ -1429,11 +1689,12 @@ namespace pdz::native
           {
             mask |= 1u << t.slot;
           }
-          else if (f.dimension == 1 && f.depth > 1)
+          else if (f.dimension == 1 && f.depth > 1 && !((short_mask >> t.slot) & 1u))
           {
             clamped |= 1u << t.slot; // a stack left as it was (fewer layers, or its fetch says clamp)
           }
           depth_of[t.slot] = f.depth;
+          clamp_z_of[t.slot] = f.clamp_z;
         }
       }
       if (mask != 0)
@@ -1460,8 +1721,8 @@ namespace pdz::native
           {
             if (((mask | clamped) >> n) & 1u)
             {
-              slots += fmt::format(" t{} {} ({} layers)", n, (mask >> n) & 1u ? "wraps" : "clamped",
-                                   depth_of[n]);
+              slots += fmt::format(" t{} {} ({} layers, clamp_z {})", n, (mask >> n) & 1u ? "wraps" : "clamped",
+                                   depth_of[n], clamp_z_of[n]);
             }
           }
           REXLOG_INFO("pdz_fix_water_loop: ps {:016X} stacked slots:{} ({} draws wrapped so far)", ps->hash, slots,
@@ -3175,7 +3436,7 @@ namespace pdz::native
           {
             sc->pad[0] = tf.resolution_scale;
           }
-          sc->pad[1] = WaterLoopMask(r, ps); // g_Reserved.y: stacked slots whose layers wrap (pdz_fix_water_loop)
+          sc->pad[1] = WaterLoopMask(r, ps, vs, dev_ptr); // g_Reserved.y: stacked slots whose layers wrap (pdz_fix_water_loop)
           for (uint32_t i = 0; i < 3; ++i)
           {
             sc->ndc_scale[i] = hv.ndc_scale[i];

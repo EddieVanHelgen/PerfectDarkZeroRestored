@@ -73,6 +73,7 @@ REXCVAR_DECLARE(bool, pdz_fix_transparency_water);
 REXCVAR_DECLARE(int32_t, pdz_transparency_trace_frame);
 REXCVAR_DECLARE(bool, pdz_transparency_test_alternate);
 REXCVAR_DECLARE(bool, pdz_fix_water_loop);
+REXCVAR_DECLARE(bool, pdz_fix_short_stacks);
 REXCVAR_DECLARE(bool, pdz_fix_random_bytes);
 REXCVAR_DECLARE(uint64_t, pdz_random_seed);
 REXCVAR_DECLARE(bool, pdz_fix_ai_semiauto_rhythm);

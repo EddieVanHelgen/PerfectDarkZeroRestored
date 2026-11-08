@@ -184,6 +184,26 @@ namespace pdz::mouse
   {
     bool LogDue(uint32_t key);
     uint32_t Be32(const uint8_t *base, uint32_t address);
+
+    // True when the object is of the player class (vtable in the image, sub_8259B6D8 at vtable +744: third_person.cpp
+    // IsPlayer), the only objects with an input block at +6560. Log 0.9.2.1 (Bridge, hardpoint turret): the steered
+    // thing passed to the look update (sub_8258CEA0's call) is the turret's look state, whose +6560 is a float
+    // (0x3F800000), so reading +1680 from it faulted (guest 0x3F800690). Any other object: -1, with one line.
+    std::atomic<bool> g_not_player_logged{false};
+    bool PlayerClass(const uint8_t *base, uint32_t object, uint32_t caller)
+    {
+      const uint32_t vtbl = Be32(base, object);
+      const bool player = vtbl >= GameConstants::kImageBase &&
+                          vtbl < GameConstants::kImageBase + GameConstants::kImageSize &&
+                          Be32(base, vtbl + 744) == 0x8259B6D8;
+      if (!player && !g_not_player_logged.exchange(true, std::memory_order_relaxed))
+      {
+        REXLOG_INFO("pdz_fix: mouse steering: object {:08X} (vtable {:08X}, caller {:08X}) is not a player: its "
+                    "+6560 is not read as an input block (it crashed Bridge's hardpoint turret)",
+                    object, vtbl, caller);
+      }
+      return player;
+    }
   } // namespace
 
   void NoteSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller)
@@ -191,8 +211,10 @@ namespace pdz::mouse
     // Guest user 0's player only (the SDK merges keyboard and mouse into user 0). He is the owner (the CamSpy, a
     // turret, the guided rocket) or the steered view itself (the hovercraft and the jetpack turn his own view with
     // the vehicle as the owner).
-    const auto user_of = [base](uint32_t object_address) -> int64_t {
-      if (object_address < 0x10000u)
+    const auto user_of = [base, caller](uint32_t object_address) -> int64_t {
+      // The hovercraft and the jetpack (callers 82675ECC / 8268659C, the view is the player) read it as before.
+      const bool own_view = caller == 0x82675ECC || caller == 0x8268659C;
+      if (object_address < 0x10000u || (!own_view && !PlayerClass(base, object_address, caller)))
       {
         return -1;
       }

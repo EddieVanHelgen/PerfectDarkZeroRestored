@@ -428,6 +428,12 @@ REXCVAR_DEFINE_BOOL(pdz_fix_water_loop, true, "Gameplay",
                     "blends into the first) in the native renderer instead of clamping them. On by default; Insert "
                     "toggles it. Needs pdz_game_fixes")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_fix_short_stacks, true, "Gameplay",
+                    "Game fix (0.9.3): the short looping texture animations (stacks of 2-7 frames) that Rare animates "
+                    "like the water loop play their frames in turn instead of holding the first and snapping back. Only "
+                    "the stacks a draw dump proved animated (a list in native_draw.cpp ShortStackMask); static 2-frame "
+                    "blends stay as they were. Native renderer. On by default. Needs pdz_game_fixes")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(pdz_transparency_test_alternate, false, "Testing",
                     "Test aid for pdz_fix_transparency_water: the fix only on odd game frames, so two consecutive "
                     "captures (a still camera) show its change alone.");
@@ -975,8 +981,9 @@ REXCVAR_DEFINE_BOOL(pdz_sabotage_play_weapons, false, "Gameplay",
                     "docs/TU3_BASE.md \"Sabotage stage 3\"")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(pdz_sabotage_reload_guard, true, "Gameplay",
-                    "tu3-base, with pdz_sabotage_bots and pdz_sabotage_play_weapons (0.9.2): the reload guard. A bot whose "
-                    "gun reloads for 2 s without finishing, or starts a second reload animation without a shot (the gun cycling "
+                    "The 0.9.2 name of pdz_bot_reload_guard (0.9.2.1: every multiplayer match with bots), still accepted: "
+                    "the one set by the higher source wins. The reload guard: a bot whose "
+                    "gun reloads for 5 s without finishing, or starts a second reload animation without a shot (the gun cycling "
                     "10 -> 14 -> 10: release log 002, a bot locked reloading at a Subway fuel dump), gets one step per "
                     "trigger: the clip refilled Rare's AI way (when empty) and Rare's instant raise; then another gun "
                     "he carries with ammo; then his attacker job's fallback (melee at a soft piece, another spot at a "
