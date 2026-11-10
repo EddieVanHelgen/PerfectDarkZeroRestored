@@ -242,7 +242,12 @@ set-up log line names the data of each lock opened.)
 SteerPick`, shared with the game) and Rare's pin rule (`StepPinHold`: within the radius the 1 s hold counts down by dt,
 outside it counts back up, as `sub_826492E8` does) on the pins of one of the 12 locks above, at random (New lock), with Rare's radius for the Agent / Secret Agent / Perfect Agent choice under it (0.45 / 0.33 / 0.20, default Secret Agent). It uses the
 window's unsaved Mouse / Keys / Both choice and sensitivity and the key list's current Move / Strafe / Look keys.
-`pdz_settings_test_dial` plays it with simulated keys and mouse counts (`keys_pa` / `mouse_pa`: the Mansion intercom door on Perfect Agent) and captures it mid-lock and finished.
+It steers only while active: dimmed under "Click to test" until a click on it (or Space while it has the focus), which
+holds the mouse on it (the pointer hides and can't leave it); a click, Esc or the focus moving away lets go and the
+overlay comes back. An unlocked dial gets a new lock at the next click. The lock's name is shown under the dial.
+`pdz_settings_test_dial` plays it with simulated keys and mouse counts (`keys_pa` / `mouse_pa`: the Mansion intercom door on Perfect Agent) and captures it mid-lock and finished; `click`
+sends the dial its own click, Esc, Space and focus messages and checks that mouse counts move the pick only while
+it is active (pictures before, active, after Esc).
 
 Other minigames: the demo kit's tile puzzle (`sub_8264ADE0`) reads the same fields as a digital pad; with the fix the
 keys of either stick move its cursor (snapped, as a pad press). The Data Thief reads no stick.

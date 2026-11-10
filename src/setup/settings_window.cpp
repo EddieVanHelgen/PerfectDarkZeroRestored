@@ -60,15 +60,20 @@ REXCVAR_DEFINE_STRING(pdz_settings_test_rebind, "", "Testing",
 REXCVAR_DEFINE_INT32(pdz_settings_test_dpi, 0, "Testing",
                      "TESTING TOOL: lay the settings window, the setup windows and the message boxes out for this "
                      "DPI (96 = 100 %, 144 = 150 %) instead of the screen's; 0 = the screen's");
+REXCVAR_DEFINE_INT32(pdz_settings_test_refresh_hz, 0, "Testing",
+                     "TESTING TOOL: the Frame rate tab's Campaign note describes a screen of this refresh rate (e.g. "
+                     "144) instead of the monitor's; 0 = the monitor's. Only the note's text: nothing else changes");
 REXCVAR_DEFINE_STRING(pdz_settings_test_answer, "swap", "Testing",
                       "TESTING TOOL: the answer pdz_settings_test_rebind gives when an input is already used: swap, "
                       "both or cancel");
 REXCVAR_DEFINE_STRING(pdz_settings_test_dial, "", "Testing",
                       "TESTING TOOL: the settings window plays the Controls tab's practice Locktopus dial by itself, "
-                      "';'-separated runs of keys, mouse or ignore (the inputs the Mouse / Keys choice leaves out must "
-                      "not move the pick), each on a new lock from a fixed seed, through the dial's own step (the "
-                      "game's steering code and Rare's pin rules) with simulated keys or mouse counts. Every step that "
-                      "matters is logged; with pdz_settings_test_capture each run's end is captured as dial_<n>.bmp")
+                      "';'-separated runs of keys, mouse, ignore (the inputs the Mouse / Keys choice leaves out must "
+                      "not move the pick) or click (Click to test: the dial's own click, Esc, Space and focus "
+                      "messages; mouse counts must move the pick only while it is active), each on a new lock from a "
+                      "fixed seed, through the dial's own step (the game's steering code and Rare's pin rules) with "
+                      "simulated keys or mouse counts. Every step that matters is logged; with "
+                      "pdz_settings_test_capture each run's end is captured as dial_<n>.bmp")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DECLARE(bool, pdz_setup_quiet);
 REXCVAR_DECLARE(bool, pdz_fix_minigame_keyboard);
@@ -366,6 +371,16 @@ namespace pdz::settings_ui
       }
       return fmt::format(L"Your screen runs at {} Hz, so the campaign plays at 60 fps.", hz);
     }
+    // The Campaign row's note: the Auto note, then co-op's rule (game_pace.cpp: co-op levels keep the 60 divider and
+    // the Split screen cap; only single player levels run at the paced 120).
+    std::wstring CampaignNote(DWORD hz)
+    {
+      if (REXCVAR_GET(pdz_settings_test_refresh_hz) > 0)
+      {
+        hz = DWORD(REXCVAR_GET(pdz_settings_test_refresh_hz));
+      }
+      return AutoNote(hz) + L"\nCo-op shares the screen, so it uses the Split screen setting below.";
+    }
 
     // ---- the window ----
 
@@ -433,6 +448,7 @@ namespace pdz::settings_ui
       kLockDial,    // the practice dial (owner-drawn)
       kLockNewLock,
       kLockDifficulty, // the practice dial's Agent / Secret Agent / Perfect Agent (Rare's radius)
+      kLockName,    // the practice lock's name, under the dial
       kOpenSettings = 400,
       kOpenLogs,
       kRebuild,
@@ -490,6 +506,8 @@ namespace pdz::settings_ui
       HWND list_scroll = nullptr; // the key list's scroll bar (ours; the list's own is clipped off)
       int list_scroll_top = -1;   // the top row it last showed
       bool list_placed = false;   // PlaceKeyList has run once
+      // The Frame rate tab's rows under the Campaign note, each with its gap (px) below the note (FitCampaignNote).
+      std::vector<std::pair<HWND, int>> rate_below;
       HWND tab_buttons[kTabCount] = {};
       // The Controls tab's Locktopus practice dial: the game's pick (minigame_input.h's shared step) on a lock of 2-3
       // pins with Rare's rules (the Secret Agent radius, a 1 s hold).
@@ -507,7 +525,7 @@ namespace pdz::settings_ui
         double hold = pdz::minigame::kPinHoldSeconds;
         double radius = pdz::minigame::kPinRadiusSecretAgent;
         bool done = false;
-        bool captured = false;     // the mouse is held by the dial (a click; click or Esc lets go)
+        bool captured = false;     // active: a click (or Space) holds the mouse and it steers; a click or Esc lets go
         bool hover = false;        // the pointer is over it
         double mdx = 0.0, mdy = 0.0; // raw mouse counts since the last step
         LARGE_INTEGER last{};
@@ -598,6 +616,50 @@ namespace pdz::settings_ui
       d.items = items;
       d.sel = items.empty() ? 0 : std::clamp(sel, 0, int(items.size()) - 1);
       return c;
+    }
+
+    // The Frame rate tab: the Campaign note as tall as its text (it differs per screen: the 144 / 165 Hz one is the
+    // longest), and the rows under it moved to keep their gaps below it. Run when the tab is built and when the
+    // monitor changes.
+    void FitCampaignNote(Ui &ui)
+    {
+      HWND note = GetDlgItem(ui.window, kCampaignNote);
+      if (!note)
+      {
+        return;
+      }
+      auto rect_of = [&](HWND c)
+      {
+        RECT r;
+        GetWindowRect(c, &r);
+        MapWindowPoints(nullptr, ui.window, reinterpret_cast<POINT *>(&r), 2);
+        return r;
+      };
+      const RECT nr = rect_of(note);
+      const auto &page = ui.page[kTabFrameRate];
+      if (ui.rate_below.empty())
+      {
+        const auto at = std::find(page.begin(), page.end(), note);
+        for (auto it = at == page.end() ? page.end() : at + 1; it != page.end(); ++it)
+        {
+          ui.rate_below.push_back({*it, int(rect_of(*it).top - nr.bottom)});
+        }
+      }
+      wchar_t text[1024] = {};
+      GetWindowTextW(note, text, 1024);
+      HDC dc = GetDC(note);
+      HGDIOBJ old = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(note, WM_GETFONT, 0, 0)));
+      RECT tr{0, 0, nr.right - nr.left, 0};
+      DrawTextW(dc, text, -1, &tr, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+      SelectObject(dc, old);
+      ReleaseDC(note, dc);
+      const int h = int(tr.bottom) + ui.px(2);
+      MoveWindow(note, nr.left, nr.top, nr.right - nr.left, h, TRUE);
+      for (const auto &[c, gap] : ui.rate_below)
+      {
+        const RECT r = rect_of(c);
+        MoveWindow(c, r.left, nr.top + h + gap, r.right - r.left, r.bottom - r.top, TRUE);
+      }
     }
 
     // ---- the open list of a drop-down ----
@@ -1835,6 +1897,15 @@ namespace pdz::settings_ui
         {"test", 3, {{318, 1.05}, {125, 0.86}, {37, 0.78}}, true},
     };
     constexpr int kRareLockCount = int(sizeof(kRareLocks) / sizeof(kRareLocks[0]));
+    // The name shown under the dial, in kRareLocks' order (the data's level and name; the one-pin lock is in most
+    // levels, the test lock is the multiplayer vehicles' lock).
+    constexpr const wchar_t *kRareLockLabels[] = {
+        L"Nightclub office back door",  L"Nightclub autogun room",  L"Subway factory side door",
+        L"Subway diversion side door",  L"Laboratory generator switch", L"Laboratory gas valve",
+        L"Mansion ladder lock",         L"Mansion intercom door",   L"River main gate",
+        L"Trinity Escape water valve",  L"One-pin lock (most levels)", L"Multiplayer vehicle lock",
+    };
+    static_assert(sizeof(kRareLockLabels) / sizeof(kRareLockLabels[0]) == size_t(kRareLockCount));
     constexpr double kDialRadius[3] = {pdz::minigame::kPinRadiusAgent, pdz::minigame::kPinRadiusSecretAgent,
                                        pdz::minigame::kPinRadiusPerfectAgent};
 
@@ -1872,7 +1943,32 @@ namespace pdz::settings_ui
       if (d.wnd)
       {
         InvalidateRect(d.wnd, nullptr, FALSE);
+        SetWindowTextW(GetDlgItem(ui.window, kLockName), kRareLockLabels[lock]);
       }
+    }
+
+    // The dial becomes active (a click on it, or Space while it has the focus): it holds the mouse (the pointer hides
+    // and stays on it; its motion steers, raw counts as in the game) and the keys steer. An unlocked dial gets a new
+    // lock first.
+    void DialActivate(Ui &ui)
+    {
+      Ui::Dial &d = ui.dial;
+      if (d.captured || !d.wnd)
+      {
+        return;
+      }
+      if (d.done)
+      {
+        DialNewLock(ui);
+      }
+      d.captured = true;
+      d.mdx = d.mdy = 0.0;
+      SetCapture(d.wnd);
+      RECT r;
+      GetWindowRect(d.wnd, &r);
+      ClipCursor(&r);
+      ShowCursor(FALSE);
+      InvalidateRect(d.wnd, nullptr, FALSE);
     }
 
     void DialRelease(Ui &ui)
@@ -1910,8 +2006,9 @@ namespace pdz::settings_ui
         mdx = d.tdx;
         mdy = d.tdy;
       }
-      else
+      else if (d.captured)
       {
+        // Only while it is active ("Click to test" until then).
         if (GetFocus() == d.wnd && GetForegroundWindow() == ui.window)
         {
           kx = (LockHeld(ui, "keybind_lstick_right") || LockHeld(ui, "keybind_rstick_right") ? 1.0 : 0.0) -
@@ -2042,6 +2139,35 @@ namespace pdz::settings_ui
         t.top = rc.bottom - ui.px(20);
         theme::Text(dc, L"Esc lets go", t, ui.tf.note, theme::kTextDim, DT_CENTER | DT_SINGLELINE);
       }
+      if (!d.captured && !d.test)
+      {
+        // Not active yet: the dial dimmed under "Click to test".
+        HDC sdc = CreateCompatibleDC(dc);
+        HBITMAP shade = CreateCompatibleBitmap(dc, 1, 1);
+        HGDIOBJ old_shade = SelectObject(sdc, shade);
+        SetPixel(sdc, 0, 0, theme::kBackground);
+        const BLENDFUNCTION blend{AC_SRC_OVER, 0, 170, 0};
+        AlphaBlend(dc, 0, 0, rc.right, rc.bottom, sdc, 0, 0, 1, 1, blend);
+        SelectObject(sdc, old_shade);
+        DeleteObject(shade);
+        DeleteDC(sdc);
+        HPEN edge = CreatePen(PS_SOLID, 1, focus ? theme::kCyan : theme::kBorder); // the border, undimmed
+        HGDIOBJ old_pen = SelectObject(dc, edge), old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, ui.px(12), ui.px(12));
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(edge);
+        // On a badge, so it reads clearly over the dial's ring.
+        RECT tw{0, 0, 0, 0};
+        HGDIOBJ old_font = SelectObject(dc, ui.tf.body);
+        DrawTextW(dc, L"Click to test", -1, &tw, DT_SINGLELINE | DT_CALCRECT);
+        SelectObject(dc, old_font);
+        const int bw = tw.right + ui.px(24), bh = tw.bottom + ui.px(10);
+        const RECT badge{rc.right / 2 - bw / 2, rc.bottom / 2 - bh / 2, rc.right / 2 - bw / 2 + bw,
+                         rc.bottom / 2 - bh / 2 + bh};
+        theme::FillRound(dc, badge, ui.px(5), theme::kPanel, theme::kBorder);
+        theme::Text(dc, L"Click to test", badge, ui.tf.body, theme::kText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      }
       BitBlt(target, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
       SelectObject(dc, old_bmp);
       DeleteObject(bmp);
@@ -2076,20 +2202,15 @@ namespace pdz::settings_ui
         if (ui)
         {
           SetFocus(hwnd);
+          // Active: a click holds the mouse on it. The held pointer can't leave the dial, so any click while active is
+          // the click outside that lets go.
           if (ui->dial.captured)
           {
             DialRelease(*ui);
           }
           else
           {
-            // Holds the mouse: the pointer hides and stays on the dial; its motion steers (raw counts, as in the game).
-            ui->dial.captured = true;
-            SetCapture(hwnd);
-            RECT r;
-            GetWindowRect(hwnd, &r);
-            ClipCursor(&r);
-            ShowCursor(FALSE);
-            InvalidateRect(hwnd, nullptr, FALSE);
+            DialActivate(*ui);
           }
         }
         return 0;
@@ -2097,6 +2218,11 @@ namespace pdz::settings_ui
         if (ui && wp == VK_ESCAPE && ui->dial.captured)
         {
           DialRelease(*ui);
+          return 0;
+        }
+        if (ui && wp == VK_SPACE && !ui->dial.captured)
+        {
+          DialActivate(*ui); // the keyboard's click
           return 0;
         }
         break;
@@ -2133,9 +2259,8 @@ namespace pdz::settings_ui
           POINT pt;
           GetCursorPos(&pt);
           ui->dial.hover = WindowFromPoint(pt) == hwnd && GetForegroundWindow() == ui->window;
-          // Raw mouse counts while it is pointed at or holds the mouse (the key list's capture shares the
-          // registration).
-          const bool want = ui->dial.hover || ui->dial.captured;
+          // Raw mouse counts while it is active (the key list's capture shares the registration).
+          const bool want = ui->dial.captured;
           if (want && !ui->raw_registered)
           {
             RawMouse(*ui, true);
@@ -2167,6 +2292,81 @@ namespace pdz::settings_ui
     {
       Ui::Dial &d = ui.dial;
       d.rng.seed(1000u + unsigned(n));
+      if (kind == "click")
+      {
+        // "Click to test": the dial's own messages (a click, Esc, a second click, Space, the focus moving away), with
+        // mouse counts fed between them as the raw input would. Inactive: the overlay, and the pick must not move.
+        SetSel(ui, kLockInputs, 2);
+        SetSel(ui, kLockDifficulty, 1);
+        DialNewLock(ui);
+        SetFocus(d.wnd);
+        auto counts_move_pick = [&]()
+        {
+          const auto before = d.pick;
+          for (int i = 0; i < 30; ++i)
+          {
+            d.mdx += 6.0;
+            d.mdy -= 6.0;
+            DialStep(ui, 1.0 / 60.0);
+          }
+          d.mdx = d.mdy = 0.0;
+          return d.pick.radius != before.radius || d.pick.angle != before.angle;
+        };
+        auto picture = [&](const char *what)
+        {
+          InvalidateRect(d.wnd, nullptr, FALSE);
+          pump(250);
+          if (!capture.empty())
+          {
+            theme::CaptureWindow(ui.window,
+                                 (fs::u8path(capture) / fmt::format("dial_{}_click_{}.bmp", n, what)).wstring());
+          }
+        };
+        wchar_t name[96] = {};
+        GetWindowTextW(GetDlgItem(ui.window, kLockName), name, 96);
+        std::string name8;
+        for (const wchar_t *c = name; *c; ++c)
+        {
+          name8 += *c < 128 ? char(*c) : '?';
+        }
+        auto verdict = [](bool ok) { return ok ? "PASS" : "FAIL"; };
+        const bool moved_before = counts_move_pick();
+        picture("before");
+        Note(fmt::format("pdz_settings: test dial: run {} 'click': lock '{}' (shown under the dial: '{}'); before the "
+                         "click: active {}, mouse counts move the pick: {} ({})",
+                         n, d.lock >= 0 ? kRareLocks[d.lock].name : "?", name8, d.captured ? "yes" : "no",
+                         moved_before ? "yes" : "no", verdict(!d.captured && !moved_before)));
+        RECT dial_rc{};
+        GetClientRect(d.wnd, &dial_rc);
+        const LPARAM centre = MAKELPARAM(dial_rc.right / 2, dial_rc.bottom / 2);
+        SendMessageW(d.wnd, WM_LBUTTONDOWN, MK_LBUTTON, centre);
+        SendMessageW(d.wnd, WM_LBUTTONUP, 0, centre);
+        const bool active_click = d.captured;
+        const bool moved_active = counts_move_pick();
+        picture("active");
+        Note(fmt::format("pdz_settings: test dial: run {} 'click': after a click: active {}, mouse counts move the pick: "
+                         "{} ({})",
+                         n, active_click ? "yes" : "no", moved_active ? "yes" : "no",
+                         verdict(active_click && moved_active)));
+        SendMessageW(d.wnd, WM_KEYDOWN, VK_ESCAPE, 0);
+        const bool moved_esc = counts_move_pick();
+        picture("after_esc");
+        Note(fmt::format("pdz_settings: test dial: run {} 'click': after Esc: active {}, mouse counts move the pick: {} "
+                         "({})",
+                         n, d.captured ? "yes" : "no", moved_esc ? "yes" : "no", verdict(!d.captured && !moved_esc)));
+        SendMessageW(d.wnd, WM_LBUTTONDOWN, MK_LBUTTON, centre);
+        const bool again = d.captured;
+        SendMessageW(d.wnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(0, 0));
+        Note(fmt::format("pdz_settings: test dial: run {} 'click': click: active {}; a second click: active {} ({})", n,
+                         again ? "yes" : "no", d.captured ? "yes" : "no", verdict(again && !d.captured)));
+        SendMessageW(d.wnd, WM_KEYDOWN, VK_SPACE, 0);
+        const bool space = d.captured;
+        SetFocus(GetDlgItem(ui.window, kLockNewLock));
+        Note(fmt::format("pdz_settings: test dial: run {} 'click': Space: active {}; the focus moved away: active {} ({})",
+                         n, space ? "yes" : "no", d.captured ? "yes" : "no", verdict(space && !d.captured)));
+        picture("after");
+        return;
+      }
       d.test = true;
       // The inputs: Both for the keys and mouse runs; for "ignore", Keys with the mouse moving, then Mouse with keys.
       // keys_pa / mouse_pa: Perfect Agent on the Mansion intercom door (its part-way pins); the others Secret Agent.
@@ -2361,7 +2561,8 @@ namespace pdz::settings_ui
         const int mon = Sel(ui, kMonitor);
         if (mon >= 0 && size_t(mon) < ui.monitors.size())
         {
-          SetWindowTextW(GetDlgItem(ui.window, kCampaignNote), AutoNote(ui.monitors[size_t(mon)].hz).c_str());
+          SetWindowTextW(GetDlgItem(ui.window, kCampaignNote), CampaignNote(ui.monitors[size_t(mon)].hz).c_str());
+          FitCampaignNote(ui);
         }
         return;
       }
@@ -2882,7 +3083,7 @@ namespace pdz::settings_ui
         return 0;
       }
       case WM_INPUT:
-        if (ui && ui->cap_row < 0 && (ui->dial.hover || ui->dial.captured))
+        if (ui && ui->cap_row < 0 && ui->dial.captured)
         {
           RAWINPUT raw{};
           UINT size = sizeof(raw);
@@ -3174,6 +3375,30 @@ namespace pdz::settings_ui
           }
         }
       }
+      // The Campaign note for every screen it can describe (this PC shows one of them; FitCampaignNote sizes it and
+      // moves the rows under it): the tab's last row still above the help strip with the tallest note.
+      {
+        HWND c = GetDlgItem(ui.window, kCampaignNote);
+        const RECT r = rect_of(c);
+        const HFONT font = reinterpret_cast<HFONT>(SendMessageW(c, WM_GETFONT, 0, 0));
+        int lowest = r.bottom;
+        for (const auto &below : ui.rate_below)
+        {
+          lowest = std::max(lowest, int(rect_of(below.first).bottom));
+        }
+        for (DWORD hz : {60u, 120u, 144u, 165u, 240u})
+        {
+          const int need = text_height(CampaignNote(hz), font ? font : ui.font, r.right - r.left, 0) + ui.px(2);
+          const int bottom = lowest + need - (r.bottom - r.top);
+          if (bottom > strip_top)
+          {
+            Note(fmt::format("pdz_settings: layout check: with the Campaign note for {} Hz ({} px) the Frame rate "
+                             "tab runs into the help strip ({} px)",
+                             hz, need, bottom - strip_top));
+            ++problems;
+          }
+        }
+      }
       // The footer's controls inside the window.
       for (int id : {kDontShow, kSafe, kPlay})
       {
@@ -3413,28 +3638,33 @@ namespace pdz::settings_ui
 
       // Frame rate.
       const bool sp120 = rex::cvar::GetFlagByName("pdz_sp_120") != "false";
-      Label(ui, kTabFrameRate, L"Campaign and co-op", x, 52, lw, true);
+      Label(ui, kTabFrameRate, L"Campaign", x, 52, lw, true);
       Segments(ui, kTabFrameRate, cx, 48, 90, kCampaign, {L"Auto", L"120 fps", L"60 fps"}, sp120 ? 0 : 2,
-            L"Auto picks 120 fps on 120 Hz screens and 60 on others. Pick 60 if your PC struggles to hold 120.");
+               L"The frame rate for single player. Auto picks 120 fps on 120 Hz screens and 60 on others. Pick 60 if "
+               L"your PC struggles to hold 120.");
       Add(ui, kTabFrameRate, L"STATIC",
-          AutoNote(ui.monitors.empty() ? 60 : ui.monitors[size_t(std::min<int>(cur_mon, int(ui.monitors.size()) - 1))].hz),
-          SS_LEFT, cx, 80, cw, 48, kCampaignNote);
-      Label(ui, kTabFrameRate, L"Multiplayer", x, 142, lw, true);
-      Segments(ui, kTabFrameRate, cx, 138, 90, kMultiplayer, {L"60 fps"}, 0,
+          CampaignNote(ui.monitors.empty()
+                           ? 60
+                           : ui.monitors[size_t(std::min<int>(cur_mon, int(ui.monitors.size()) - 1))].hz),
+          SS_LEFT, cx, 80, cw, 56, kCampaignNote); // FitCampaignNote sizes it to its text, the rows below follow
+      Label(ui, kTabFrameRate, L"Multiplayer", x, 150, lw, true);
+      Segments(ui, kTabFrameRate, cx, 146, 90, kMultiplayer, {L"60 fps"}, 0,
                L"Multiplayer always runs at 60 fps. The game's timing and bots were built for it.", true);
-      Add(ui, kTabFrameRate, L"STATIC", L"Locked at 60.", SS_LEFT, cx + 104, 142, 220, 22,
+      Add(ui, kTabFrameRate, L"STATIC", L"Locked at 60.", SS_LEFT, cx + 104, 150, 220, 22,
           kMultiplayerNote);
       // Split screen (pdz_splitscreen_cap, 2026-11-08): the frame rate while 2 or more players share the screen.
-      Label(ui, kTabFrameRate, L"Split screen", x, 200, lw, true);
+      Label(ui, kTabFrameRate, L"Split screen", x, 208, lw, true);
       const std::string split_cap = rex::cvar::GetFlagByName("pdz_splitscreen_cap");
       const int split_sel = split_cap == "60" ? 1 : split_cap == "40" ? 2 : split_cap == "30" ? 3 : 0;
-      Segments(ui, kTabFrameRate, cx, 196, 90, kSplitCap, {L"Auto", L"60 fps", L"40 fps", L"30 fps"}, split_sel,
+      Segments(ui, kTabFrameRate, cx, 204, 90, kSplitCap, {L"Auto", L"60 fps", L"40 fps", L"30 fps"}, split_sel,
                L"The frame rate while two or more of you share the screen, in co-op or multiplayer. With three or "
                L"four players a steady 40 or 30 is smoother than dropped frames.");
+      // As wide as the notes above (the wider box ran to the window's edge).
       Add(ui, kTabFrameRate, L"STATIC",
           L"Only while 2 or more players share the screen, in the level. Auto: 60 fps with 2 players, 40 fps with 3 "
           L"or 4 on a 120 Hz screen.",
-          SS_LEFT, cx, 230, cw + 40, 44, kSplitCapNote);
+          SS_LEFT, cx, 238, cw, 70, kSplitCapNote);
+      FitCampaignNote(ui);
       ui.tab_help[kTabFrameRate] = L"Point at a setting to see what it does.";
 
       // Map packs.
@@ -3596,14 +3826,19 @@ namespace pdz::settings_ui
           wc.lpszClassName = L"PDZRestoredLockDial";
           dial_class = RegisterClassW(&wc) != 0;
         }
-        ui.dial.wnd = Add(ui, kTabControls, L"PDZRestoredLockDial", L"", WS_TABSTOP, 412, gy - 2, 220, 92, kLockDial,
-                          L"Practice lock: point at it to steer with the mouse, or click it to keep the mouse there "
-                          L"(click or Esc lets go). Click it first to use the keys.");
+        const std::wstring dial_help = L"Practice lock: click it (or press Space) to steer the pick with the mouse or "
+                                       L"the keys. Click again or press Esc to let go.";
+        ui.dial.wnd = Add(ui, kTabControls, L"PDZRestoredLockDial", L"", WS_TABSTOP, 412, gy - 2, 220, 86, kLockDial,
+                          dial_help);
         SetTimer(ui.dial.wnd, 1, 15, nullptr);
-        Combo(ui, kTabControls, 412, gy + 98, 132, kLockDifficulty, {L"Agent", L"Secret Agent", L"Perfect Agent"}, 1,
+        // The lock's name, small, under the dial (DialNewLock sets it).
+        HWND lock_name = Add(ui, kTabControls, L"STATIC", L"", SS_CENTER | SS_NOPREFIX, 412, gy + 85, 220, 20,
+                             kLockName, dial_help);
+        SendMessageW(lock_name, WM_SETFONT, reinterpret_cast<WPARAM>(ui.tf.note), TRUE);
+        Combo(ui, kTabControls, 412, gy + 110, 132, kLockDifficulty, {L"Agent", L"Secret Agent", L"Perfect Agent"}, 1,
               L"The practice lock's difficulty: how close the pick has to be to a pin (Rare's distances 0.45, 0.33 and "
               L"0.20; Dark Agent is as Perfect Agent).");
-        Button(ui, kTabControls, L"New lock", 548, gy + 96, 84, kLockNewLock,
+        Button(ui, kTabControls, L"New lock", 548, gy + 108, 84, kLockNewLock,
                L"A new practice lock: the pins of one of Rare's own locks, picked at random.");
         ui.dial.rng.seed(GetTickCount());
         DialNewLock(ui);
