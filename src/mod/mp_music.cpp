@@ -1202,14 +1202,50 @@ namespace
   }
 } // namespace
 
+#if PDZ_COUNTEROP
+// counter_op_menu.cpp (pdz_counterop_menu): MISSION MODE's COUNTER OPERATIVE entry, the Datacore / Arena gate, the
+// co-op headers, Rare's counter-op card and the debriefing header.
+bool PdzCounterOpSceneWanted();
+bool PdzCounterOpRefuseScene(PPCContext &ctx, uint8_t *base, const std::string &path, uint32_t out);
+bool PdzCounterOpCreateInstead(PPCContext &ctx, uint8_t *base, const std::string &path);
+void PdzCounterOpSceneCreated(PPCContext &ctx, uint8_t *base, const std::string &path, uint32_t scene);
+#endif
+
 // sub_8278F550(base path, path, init data, &scene): XuiSceneCreate. A
 // create-game scene gets its Music rows.
 REX_HOOK_RAW(sub_8278F550)
 {
-  const std::string path = MenuActive() ? Lower(ReadWide(base, ctx.r4.u32, 260)) : std::string();
+#if PDZ_COUNTEROP
+  const bool counterop = PdzCounterOpSceneWanted();
+#else
+  const bool counterop = false;
+#endif
+  const bool music = MenuActive();
+  const std::string path = (music || counterop) ? Lower(ReadWide(base, ctx.r4.u32, 260)) : std::string();
   const uint32_t out = ctx.r6.u32;
+#if PDZ_COUNTEROP
+  if (counterop && PdzCounterOpRefuseScene(ctx, base, path, out))
+  {
+    ctx.r3.u64 = 0x80004005u; // E_FAIL: XuiNavButton (827A84B8) stays on the current scene
+    return;
+  }
+  // Rare's counter-op card is made from Rare's co-op card (the same layout as CO-OPERATIVE's description).
+  if (!counterop || !PdzCounterOpCreateInstead(ctx, base, path))
+  {
+    __imp__sub_8278F550(ctx, base);
+  }
+#else
   __imp__sub_8278F550(ctx, base);
-  if (path.find("creategame") == std::string::npos || int32_t(ctx.r3.u32) < 0 || !out)
+#endif
+#if PDZ_COUNTEROP
+  if (counterop && int32_t(ctx.r3.u32) >= 0 && out && LoadBe32(base, out))
+  {
+    const uint32_t result = ctx.r3.u32;
+    PdzCounterOpSceneCreated(ctx, base, path, LoadBe32(base, out));
+    ctx.r3.u64 = result;
+  }
+#endif
+  if (!music || path.find("creategame") == std::string::npos || int32_t(ctx.r3.u32) < 0 || !out)
   {
     return;
   }

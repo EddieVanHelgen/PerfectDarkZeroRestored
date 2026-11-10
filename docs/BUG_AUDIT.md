@@ -48,6 +48,7 @@ Every confirmed fix is on by default; enhancements are off.
 | Still-lock (aim enhancement, kept on by request) | `pdz_aim_still_lock` (needs `pdz_autoaim_tuning`) | on | F10 |
 | Headshots kept (aim enhancement, on by request for testing) | `pdz_aim_respect_headshots` (needs `pdz_autoaim_tuning`) | on | F10 |
 | Rotational assist while zoomed (aim enhancement, on by request) | `pdz_aim_assist_zoomed` (needs `pdz_autoaim_tuning`) | on | F10 |
+| Zoomed auto-aim falloff (aim enhancement): zoomed, a bend is allowed only within `pdz_autoaim_zoom_radius` x (1 - zoom)^2 unzoomed screen units, else the shot goes where the crosshair points; also limits the zoomed rotational assist to 2x zoom | `pdz_autoaim_zoom_falloff`, `pdz_autoaim_zoom_radius` 0.05 (needs `pdz_autoaim_tuning`) | on | F10 |
 | Controls fixes (parked) | `pdz_controls_fixes` + options | off | F2 |
 
 Off by default: look tuning, the other aim tweaks (close-range radius,

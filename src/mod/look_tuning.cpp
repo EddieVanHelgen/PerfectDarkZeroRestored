@@ -40,9 +40,15 @@
 
 #include "../game_cvars.h"
 #include "game_fixes.h"
+#include "mnk_layout.h"
 #include "mouse_look.h"
 #include "render/latency_log.h"
 #include "hook_profile.h" // pdz_hook_profile (must follow <rex/hook.h>)
+
+REXCVAR_DEFINE_BOOL(pdz_look_turn_log, false, "Diagnostics",
+                    "Testing: log every on-foot look update while the right stick is off centre (raw and filtered "
+                    "stick, the look input to 6 places, the fast-look flag, the turn)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__sub_825B3AC0);
 REX_EXTERN(__imp__sub_825AC948);
@@ -136,6 +142,11 @@ namespace
   constexpr float kPadQuietDeadzoneDefault = 5000.0f;
   constexpr uint32_t kPadJitterUnknown = 0x7FFF;
   std::array<bool, 4> g_pad_deadzone_applied{};
+  // The mouse stick's route for pad 0 in the current poll (the pad filter hook below; game thread).
+  pdz::mnk_layout::SteerRoute g_steer_route;
+  bool g_steer_route_for_right = false; // slot 0 decided the route of this poll
+  bool g_steer_taken = false;           // SteerStickForPad called this poll
+  double g_steer_x = 0.0, g_steer_y = 0.0;
 
   // pdz_look_slow_detect (overnight 30-31 Oct). Offsets from the launch branch's per-frame look log (a6d3021,
   // docs/LOOK_PIPELINE.md), input fields + 0x210 in TU3.
@@ -589,6 +600,41 @@ namespace
                 p.radial_magnitude < 0.0f ? std::string("off") : fmt::format("{:.4f}", p.radial_magnitude),
                 32767.0f - std::fabs(p.centre[0]) - p.deadzone[0], 32767.0f - std::fabs(p.centre[1]) - p.deadzone[1]);
   }
+
+  // pdz_look_turn_log (rc2, testing): one line per on-foot look update while the right stick is off centre or the
+  // view turns: the raw / filtered stick, the look model's x and y input to 6 places (Rare's Standard fast look needs
+  // -1 < x < 1 strictly), the fast-look flag and the turn this frame.
+  void TurnLog(uint8_t *base, uint32_t owner, uint32_t state, uint32_t input, double dt, float yaw_before)
+  {
+    if (!(dt > 0.0005 && dt < 0.1))
+    {
+      return;
+    }
+    const int32_t pad = int32_t(LoadBe32(base, input + kInputPad));
+    if (pad < 0 || pad >= 4)
+    {
+      return;
+    }
+    const PadSample &p = g_pad_sample[pad];
+    float turn = LoadBeFloat(base, owner + kPlayerViewYaw) - yaw_before;
+    while (turn > 180.0f)
+    {
+      turn -= 360.0f;
+    }
+    while (turn < -180.0f)
+    {
+      turn += 360.0f;
+    }
+    if (p.raw[0] == 0 && p.raw[1] == 0 && std::fabs(turn) < 1e-4f)
+    {
+      return;
+    }
+    REXLOG_INFO("pdz_look_turn: pad {} raw {:+d},{:+d} filtered {:+d},{:+d} look {:+.6f},{:+.6f} fast {} turn "
+                "{:+.4f} deg rate {:+.1f} deg/s dt {:.2f} ms",
+                pad, p.raw[0], p.raw[1], p.out[0], p.out[1], LoadBeFloat(base, input + kInputStickLook),
+                LoadBeFloat(base, input + kInputStickLook + 4), int(base[state + kStateFastLook]), turn,
+                turn / float(dt), dt * 1000.0);
+  }
 } // namespace
 
 REX_HOOK_RAW(sub_825B3AC0)
@@ -597,17 +643,22 @@ REX_HOOK_RAW(sub_825B3AC0)
   const uint32_t state = ctx.r5.u32;
   const bool on_foot = owner && ctx.r4.u32 == owner && state == owner + kPlayerLookState;
   pdz::mouse::PumpTestMotion(); // pdz_mouse_test_motion (testing tool)
-  if (owner && ctx.r4.u32 != owner)
+  const uint32_t view = ctx.r4.u32;
+  const uint32_t caller = uint32_t(ctx.lr);
+  pdz::mouse::Steer steer = pdz::mouse::Steer::kNotTaken;
+  if (owner && view != owner)
   {
     // The CamSpy, a turret, the guided rocket, the hovercraft or the jetpack (mouse_look.h NoteSteeredLook).
-    pdz::mouse::NoteSteeredLook(base, owner, ctx.r4.u32, uint32_t(ctx.lr));
+    steer = pdz::mouse::NoteSteeredLook(base, owner, view, caller);
   }
   if (!on_foot)
   {
     pdz::mouse::LookProbe probe;
-    pdz::mouse::LookProbeBegin(base, owner, ctx.r4.u32, state, uint32_t(ctx.lr), probe);
+    pdz::mouse::LookProbeBegin(base, owner, view, state, caller, probe);
     __imp__sub_825B3AC0(ctx, base);
     pdz::mouse::LookProbeEnd(base, probe);
+    // pdz_mouse_direct_steer: a mounted turret's aim takes the mouse here, before the turret's own clamp.
+    pdz::mouse::AfterSteeredLook(base, owner, view, caller, steer);
     return;
   }
   pdz::latency::OnPlayerLook(base, owner); // render/latency_log.h: pad 0's player (pdz_latency_log)
@@ -695,6 +746,10 @@ REX_HOOK_RAW(sub_825B3AC0)
   if (REXCVAR_GET(pdz_look_slow_detect) && IsGuestPointer(input))
   {
     SlowTurnDetect(base, owner, state, input, dt, yaw_before, zoom_brake);
+  }
+  if (REXCVAR_GET(pdz_look_turn_log) && IsGuestPointer(input))
+  {
+    TurnLog(base, owner, state, input, dt, yaw_before);
   }
   if (tuned)
   {
@@ -809,8 +864,36 @@ REX_HOOK_RAW(sub_822733D0)
     }
   } stick_log{base, x_address, y_address, slot == 4 ? int32_t(LoadBe32(base, x_address)) : 0,
               slot == 4 ? int32_t(LoadBe32(base, y_address)) : 0, slot == 4 && pdz::mouse::SteerLogOn()};
-  // pdz_mouse_invert while the mouse steers the CamSpy / a turret / a vehicle as the right stick
-  // (mouse_look.h SteeringInvertY): pad 0's right stick y is flipped after everything below, on every way out.
+  // The mouse as a stick while the CamSpy / a turret / the guided rocket / a vehicle is steered goes to the stick
+  // axes that turn and pitch in the player's controller layout (mnk_layout.h RouteForSteering: the right stick, or
+  // in Classic PD / with the sticks swapped partly or wholly the left one). Pad 0's left stick (slot 0) is filtered
+  // before its right stick (slot 4) in each poll (sub_82723F40): a route with a left axis takes the mouse stick at
+  // slot 0 and keeps the right part for slot 4; otherwise slot 4 takes it, as before.
+  const bool pad0 = slot == 0 || slot == 4;
+  pdz::mnk_layout::SteerRoute route;
+  if (pad0)
+  {
+    if (slot == 0)
+    {
+      g_steer_route = pdz::mnk_layout::RouteForSteering();
+      g_steer_taken = false;
+      if (g_steer_route.x_left || g_steer_route.y_left)
+      {
+        pdz::mouse::SteerStickForPad(g_steer_x, g_steer_y);
+        g_steer_taken = true;
+      }
+      g_steer_route_for_right = true;
+    }
+    else if (!g_steer_route_for_right)
+    {
+      g_steer_route = pdz::mnk_layout::RouteForSteering(); // no slot 0 call this poll: decide here
+      g_steer_taken = false;
+    }
+    route = g_steer_route;
+  }
+  const uint32_t y_slot = route.y_left ? 0u : 4u;
+  // pdz_mouse_invert while the mouse steers the CamSpy / a turret / a vehicle as a stick
+  // (mouse_look.h SteeringInvertY): pad 0's look-pitch stick's y is flipped after everything below, on every way out.
   struct InvertY
   {
     uint8_t *base;
@@ -824,15 +907,34 @@ REX_HOOK_RAW(sub_822733D0)
         StoreBe32(base, address, uint32_t(std::clamp(-y, -32767, 32767)));
       }
     }
-  } invert_y{base, y_address, slot == 4 && pdz::mouse::SteeringInvertY()};
-  if (slot == 4)
+  } invert_y{base, y_address, pad0 && slot == y_slot && pdz::mouse::SteeringInvertY()};
+  if (pad0)
   {
-    // The mouse as pad 0's right stick while the CamSpy / a turret / the guided rocket / a vehicle is steered
+    // The mouse as pad 0's stick while the CamSpy / a turret / the guided rocket / a vehicle is steered
     // (mouse_look.h SteerStickForPad). Written here, after the SDK's own stick dead zone (mapping.toml
     // right_stick_deadzone_percentage, 0.2, would swallow slow mouse motion), as the raw stick the filter reads: from
     // its learned centre, just past the dead zone it uses, out to the rim. A controller pushed further wins.
     double mouse_x = 0.0, mouse_y = 0.0;
-    pdz::mouse::SteerStickForPad(mouse_x, mouse_y);
+    if (slot == 4 && !g_steer_taken)
+    {
+      pdz::mouse::SteerStickForPad(g_steer_x, g_steer_y);
+      g_steer_taken = true;
+    }
+    if (g_steer_taken)
+    {
+      // This slot's share: x where the layout turns, y where it pitches.
+      mouse_x = route.x_left == (slot == 0) ? g_steer_x : 0.0;
+      mouse_y = route.y_left == (slot == 0) ? g_steer_y : 0.0;
+      if (route.undo_game_invert)
+      {
+        mouse_y = -mouse_y; // the game's Look Inversion negates the look pitch: mouse up stays look up
+      }
+    }
+    if (slot == 4)
+    {
+      g_steer_route_for_right = false; // this poll is done
+      g_steer_taken = false;
+    }
     if (mouse_x != 0.0 || mouse_y != 0.0)
     {
       const uint32_t pad = kPadFilterState + slot * kPadFilterStride;

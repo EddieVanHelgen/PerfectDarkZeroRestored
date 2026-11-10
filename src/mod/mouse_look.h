@@ -9,7 +9,8 @@
 // there, and puts mnk in menu mode (left click / Enter = A, right click / Esc = B, wheel = D-pad). While the player
 // steers something else (the CamSpy, a turret, the guided rocket, the hovercraft, the jetpack: NoteSteeredLook)
 // MouseLook keeps the pointer and its motion becomes pad 0's right stick in the pad filter (TakeSteerStick), and mnk
-// stays in play mode.
+// stays in play mode; a mounted turret instead takes the motion into its aim directly (pdz_mouse_direct_steer,
+// AfterSteeredLook / ConsumeSteer).
 #pragma once
 
 #include <rex/cvar.h>
@@ -44,6 +45,10 @@ namespace pdz::mouse
   // pdz_mouse_aim_assist_off). Logged once at each switch. Any thread.
   bool MouseIsLastDevice();
 
+  // Raw mouse motion since the last call (the window's mouse events, in counts, whoever owns the pointer), for the
+  // Locktopus on the mouse (minigame_input.cpp). Positive dy = the mouse moved down. Any thread.
+  void TakeRawMouseMotion(double &dx, double &dy);
+
   // The look update (sub_825B3AC0, look_tuning.cpp's hook) steered something other than the player's own view for
   // guest user 0's player: the CamSpy, a hardpoint turret, the guided rocket (he is the owner), the hovercraft or the
   // jetpack (his own view, the vehicle the owner). Each reads the player's right stick. While one is steered (and for
@@ -53,7 +58,20 @@ namespace pdz::mouse
   // so the CamSpy couldn't be steered. mnk_sensitivity sets the scale as before, mouse up = stick up (pdz_mouse_invert
   // flips it: SteeringInvertY), and mnk stays out of menu mode (the mouse buttons and the wheel stay what they are in
   // play). One line when it takes / gives back the mouse. caller = the look update's return address (which it is).
-  void NoteSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller);
+  // Returns kNotTaken (not guest user 0's), kStick (the mouse as the right stick, above) or kDirect
+  // (pdz_mouse_direct_steer: a mounted turret, whose aim the mouse turns directly: AfterSteeredLook).
+  enum class Steer
+  {
+    kNotTaken,
+    kStick,
+    kDirect,
+  };
+  Steer NoteSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller);
+  // After the look update (sub_825B3AC0) of a steered thing NoteSteeredLook took (look_tuning.cpp): kDirect adds the
+  // mouse turn to the steered view's own yaw / pitch fields (degrees at that moment; for a turret, before its own
+  // conversion back to radians, yaw wrap and pitch clamp). pdz_mouse_direct_steer_log: once a second, the turret's
+  // aim, the mouse counts and the turn (either mode, for the controller comparison too).
+  void AfterSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller, Steer steer);
   // Something is being steered (above) and pdz_mouse_invert is on and the keyboard / mouse is the last device used:
   // the pad filter flips pad 0's right stick y (look_tuning.cpp).
   bool SteeringInvertY();
@@ -100,8 +118,19 @@ namespace pdz::mouse
     void NoteGameplayLook();
 
     // Something else than the player's view is being steered (NoteSteeredLook): keeps (or takes) the pointer as on
-    // foot, but its motion is kept for TakeSteerStick instead of turning the player's view. Guest thread.
-    void ConsumeForSteering();
+    // foot, but its motion is kept for TakeSteerStick instead of turning the player's view. Guest thread. direct
+    // (pdz_mouse_direct_steer): only the claim advances; the motion stays pending for ConsumeSteer.
+    void ConsumeForSteering(bool direct);
+
+    // pdz_mouse_direct_steer: the mouse turn since the last call for a steered thing's aim (as Consume, degrees),
+    // with pdz_mouse_test_steer / _y's synthetic counts added (wall clock) whatever the claim's state. counts_* =
+    // the counts taken (real and synthetic).
+    struct SteerTurn
+    {
+      Turn turn{0.0, 0.0};
+      double counts_x = 0.0, counts_y = 0.0;
+    };
+    SteerTurn ConsumeSteer(double extra_scale);
 
     // The mouse as a right stick for the steered thing: x / y in -1..1 (y + = up), from the motion since the last
     // call, smoothed; zero (and the smoothing reset) when steering is false. Called by the pad filter once per poll
@@ -151,6 +180,7 @@ namespace pdz::mouse
     // The claim's state machine (idle -> handoff -> engaging -> engaged); true when engaged (motion flowing).
     bool AdvanceClaimLocked(Clock::time_point now, UiTask &task);
     Turn TakeTurnLocked(double extra_scale);
+    static Turn TurnFromCounts(double dx, double dy, double extra_scale);
     bool OverlayWantsMouse() const;
 
     // Call without mu_ held.
@@ -176,6 +206,7 @@ namespace pdz::mouse
     // ConsumeForSteering / TakeSteerStick: motion kept for the steered thing, and its smoothed speed (counts / s).
     double steer_dx_ = 0.0, steer_dy_ = 0.0, steer_vx_ = 0.0, steer_vy_ = 0.0;
     Clock::time_point last_stick_{};
+    Clock::time_point last_steer_turn_{}; // ConsumeSteer: the synthetic counts' clock
 
     std::thread watchdog_;
     std::condition_variable watchdog_cv_;

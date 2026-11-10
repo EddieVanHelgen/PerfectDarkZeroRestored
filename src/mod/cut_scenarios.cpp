@@ -24433,7 +24433,27 @@ REX_HOOK_RAW(sub_82546BC8)
     }
     PdzProtectionBotDamaged(ctx, base, ctx.r3.u32, ctx.r4.u32, ctx.f1.f64);
   }
+#if PDZ_COUNTEROP
+  bool PdzCounterOpIsPlayer2(uint32_t character); // counter_op.cpp
+  // Counter-op: player 2 (the counter-operative) gets no co-op mercy (82546C0C..82546D18: in solo / co-op a human's
+  // hit is zeroed in the first 5 s of a window, or halved near death three times, each opening a new 5 s window).
+  // The routine skips that block when its stack argument byte (entry r1+0x6F) is set; it is set for this call only and
+  // restored. The agent keeps Rare's co-op mercy.
+  const bool no_mercy = PdzCounterOpIsPlayer2(ctx.r3.u32);
+  const uint32_t mercy_arg = ctx.r1.u32 + 0x6F;
+  const uint8_t mercy_old = no_mercy ? base[mercy_arg] : 0;
+  if (no_mercy)
+  {
+    base[mercy_arg] = 1;
+  }
   __imp__sub_82546BC8(ctx, base);
+  if (no_mercy)
+  {
+    base[mercy_arg] = mercy_old;
+  }
+#else
+  __imp__sub_82546BC8(ctx, base);
+#endif
 }
 
 namespace

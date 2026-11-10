@@ -37,6 +37,7 @@
 #include "mod/anim_viewer.h"
 #include "mod/restorations.h"
 #include "mod/mouse_look.h" // pdz_mouse_look
+#include "mod/mnk_layout.h" // pdz_mnk_follow_layout
 #include "setup/settings_window.h" // the settings launch window
 #endif
 #include "utils.h"
@@ -205,6 +206,8 @@ public:
 #endif
     // Mouse aim straight into the view angles, menu mode for mnk (src/mod/mouse_look.h).
     pdz::mouse::MouseLook::Get().Attach(window(), drawer);
+    // The keyboard's stick keys follow the in-game controller layout (src/mod/mnk_layout.h).
+    pdz::mnk_layout::Attach(window());
     pdz::native::RegisterMarkBind(); // test aid: bind_mark_spot (F12), capture + pdz_mark line
     // The release version in the title (the SDK set "PDZRestored <SDK build stamp>").
     if (window())

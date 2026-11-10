@@ -261,13 +261,36 @@ REXCVAR_DEFINE_BOOL(pdz_aim_respect_headshots, true, "Gameplay",
 
 REXCVAR_DEFINE_BOOL(pdz_aim_assist_zoomed, true, "Gameplay",
                     "Keep the game's rotational aim assist (the sticky turn with a target) on "
-                    "while zoomed; the original switches it off when you zoom. Enhancement, on by "
-                    "request (F10 switches the aim tweaks); false = original")
+                    "while zoomed; the original switches it off when you zoom. With "
+                    "pdz_autoaim_zoom_falloff on it stays on only up to 2x zoom (a scope gets the "
+                    "original rule). Enhancement, on by request (F10 switches the aim tweaks); "
+                    "false = original")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_autoaim_zoom_falloff, true, "Gameplay",
+                    "The more you zoom, the less auto-aim bends your shots: zoomed, a shot is "
+                    "bent onto a target only if that moves it less than pdz_autoaim_zoom_radius x "
+                    "(1 - zoom)^2, else it goes exactly where the crosshair points (about none at "
+                    "full scope zoom). It also limits the zoomed sticky turn of "
+                    "pdz_aim_assist_zoomed to 2x zoom. Not zoomed: unchanged. Enhancement, on by "
+                    "default (F10 switches the aim tweaks); false = the bend at every zoom")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(pdz_autoaim_zoom_radius, 0.05, "Gameplay",
+                      "How far auto-aim may move a zoomed shot before pdz_autoaim_zoom_falloff "
+                      "refuses the bend, at the start of the zoom, in the game's unzoomed screen "
+                      "units (1 = the edge of the view; 0.05 is about 1.6 degrees). It shrinks "
+                      "with (1 - zoom)^2: 2x zoom allows about 7 cm at 10 m, the P99's 5x scope "
+                      "about 1 cm. 0 = no bending while zoomed")
+    .range(0.0, 0.5)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(pdz_autoaim_log, false, "Debug",
-                    "Log auto-aim once a second (target, lock, distance, target angular speed) "
-                    "and distance / angular speed percentiles every 10 seconds")
+                    "Log auto-aim: one 'pdz_autoaim: shot' line per shot by a local player and a "
+                    "'pdz_autoaim: decision' line when the target or the result changes (at most "
+                    "10 a second): zoom, target and distance, how far auto-aim moves the shot, the "
+                    "zoom falloff's limit, the target's angle from the crosshair, whether still "
+                    "lock widened the lock, and bent / refused")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(pdz_fov_scale, 1.0, "Gameplay",
@@ -546,6 +569,80 @@ REXCVAR_DEFINE_BOOL(pdz_restore_light_speech, false, "Gameplay",
                     "line. Speech only: the darkness itself is unchanged. Off by default")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// Laboratory | Rescue restorations (src/mod/lab_restorations.cpp; research in
+// the Laboratory research notes). Rare's lines and Rare's logic where
+// they exist; each off by default.
+REXCVAR_DEFINE_BOOL(pdz_lab_blackout_lines, false, "Gameplay",
+                    "Restoration: the Laboratory staff's cut lights-out lines on the generator blackout "
+                    "(pdz_restore_light_speech's lines), spoken only by staff standing inside one of Rare's "
+                    "four darkened light-group boxes (main hall, generator room, cutscene room, security / "
+                    "tower), so nobody in the still-lit Lab One / Lab Two says \"lights out again\". Speech "
+                    "only. Off by default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_lab_power_return, false, "Gameplay",
+                    "Restoration: the Laboratory's power comes back on the generator SWITCH route only "
+                    "(the quiet lockbot route and the explosives stay permanent, as Chandra's lines say). "
+                    "pdz_lab_power_return_s after the switch: the lights Rare switched off fade back in, the "
+                    "ambient light returns, the darkened guards get their sight and aim back (Rare's "
+                    "uncalled reset), the tannoy's \"reconnecting the power\" promises stop (Rare's unused "
+                    "flag 40) and Chandra says her recorded, never-played \"Generator is back online\". "
+                    "Off by default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(pdz_lab_power_return_s, 90, "Gameplay",
+                     "pdz_lab_power_return: seconds of game time between the generator switch and the power "
+                     "returning. 90 = after the tannoy's \"temporary power failure\" (10 s) and its first "
+                     "\"apologize for the delay\" (40-70 s), before the second (70-130 s). Rare left no "
+                     "number: the tannoy promises every 30-60 s")
+    .range(5, 600)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_lab_darkness_list, true, "Gameplay",
+                    "Fix (Rare's data slips): the Laboratory's darkness list reaches every generator-room "
+                    "guard. Rare's list names s3g6, but that guard's record is tagged s3g4 by mistake (a "
+                    "duplicate, so only one of the two is found), and the two variant walkway guards "
+                    "(s3gb / s3gc) were left off, so on two of three level variants the walkway guard keeps "
+                    "full sight in the dark. On by default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(pdz_lab_blackout_coverage, 1, "Gameplay",
+                     "OUR addition (not Rare's): how far the Laboratory generator blackout reaches. 1 = Rare's "
+                     "four light-group boxes exactly as shipped (560 lights off; Lab One, Lab Two, the prison, the "
+                     "vents and the strips down both sides of the main hall stay lit; the 25 listed guards "
+                     "darkened). 2 = also the gaps inside the dark areas: the lit strips down both sides of the "
+                     "main hall (45 lights) and the far end of security (26), 71 more. 3 = every switchable light "
+                     "in the level except the red cell lights, the amber security lights and the sun (201 more "
+                     "than 1), and the darkness (10 m sight, slow aim) for everyone Rare's list leaves out: the "
+                     "prison guards (Rare's full darkness with his search, also when they wake after the "
+                     "blackout) and the ten scientists (sight only, so a calm scientist no longer spots Jo across "
+                     "a lit lab and runs for the alarm; his behaviour is otherwise unchanged). Same instant "
+                     "switch-off as Rare's, in the same frame, on every route; the level is fixed at the "
+                     "blackout. pdz_lab_power_return restores all of it; pdz_lab_blackout_lines drops its box "
+                     "filter at 3. Default 1")
+    .range(1, 3)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_fix_lab_tannoy_repeat, true, "Gameplay",
+                    "Fix (Rare bug): after the Laboratory generator blackout the tannoy's \"we apologize for the "
+                    "delay in reconnecting the power\" (TANNOY_TRIGGER03) repeats every 30-60 s for the rest of "
+                    "the mission, even over the alarm, because the \"power restored\" flag that stops it (40) is "
+                    "never set. With this on it plays at most 3 times, then the power announcements stop (flag 40 "
+                    "is left alone, so the joke announcements don't come back in the dark). pdz_lab_power_return "
+                    "still sets flag 40 when the power returns. On by default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_lab_cut_lines, false, "Gameplay",
+                    "Restoration: small Laboratory lines Rare recorded and never wired. Chandra's gas payoff "
+                    "(\"just as well you locked the valve down\" / \"destroyed the vent fans\") when the "
+                    "Perfect / Dark Agent gas attack would have started but the defences were already "
+                    "neutralised; the gas programmer's \"OK, OK. Gimme a chance.\" after Jo's threat; "
+                    "Chandra's level hints 02 (gold keycard, after a gold door refuses Jo), 07 (where the "
+                    "tracking system is, after she announces it), 08 (the datathief virus, after \"controls "
+                    "are locked out\") and 10 (where the gas is controlled, after the gas starts). Off by "
+                    "default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // Testing tools (not game options): for testing in the recomp only.
 REXCVAR_DEFINE_BOOL(pdz_test_god_mode, false, "Testing",
                     "TESTING TOOL, not a game option: the player takes no damage (the player's damage "
@@ -587,11 +684,28 @@ REXCVAR_DEFINE_INT32(pdz_test_mp_snapshot_s, 0, "Testing",
     .range(0, 3600)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(pdz_test_lab_light_census, false, "Testing",
+                    "TESTING TOOL, not a game option: at the Laboratory blackout and at pdz_lab_power_return's power "
+                    "return, log how many scene lights are on / off in total and per area (main hall, generator room, "
+                    "cutscene room, security, Lab One, Lab Two, prison, vents, spawner end), to check "
+                    "pdz_lab_blackout_coverage by log. Off by default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(pdz_test_lab_blackout_key, false, "Testing",
                     "TESTING TOOL, not a game option: in Laboratory, the Home key sends the generator "
                     "blackout messages to the level script as the generator switch did in log 114 "
                     "(lights out, Chandra's lights-out line, the darkness; the tannoy 10 s and 52 s later), "
                     "and every Laboratory script message is logged. Off by default")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(pdz_test_lab_blackout_now, 0, "Testing",
+                     "TESTING TOOL, not a game option: in Laboratory, changing this to a non-zero value sends the "
+                     "generator blackout to the level script as the Home key of pdz_test_lab_blackout_key does "
+                     "(input scripts: 'cvar <t> pdz_test_lab_blackout_now 1'). 1 = the lockbot-style blackout "
+                     "(Chandra's CHAN_06); 2 = the switch route for pdz_lab_power_return (Chandra's CHAN_04 + "
+                     "TANNOY_TRIGGER01 and the switch-route marker, flag 37; the real switch's alarm 14 s later "
+                     "is not sent). Set it back to 0 before sending another. 0 (default) = nothing")
+    .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(pdz_controls_fixes, false, "Gameplay",

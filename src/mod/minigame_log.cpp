@@ -26,6 +26,7 @@
 // attacker, f1 damage) for the minigame's holder.
 // A minigame not updated for 1 s ends as "interrupted" (unless it ended).
 #include "minigame_log.h"
+#include "minigame_input.h" // NoteDemoKit: the keyboard fix follows the demo kit's puzzle too
 
 #include <chrono>
 #include <cstdio>
@@ -382,6 +383,7 @@ REX_HOOK_RAW(sub_826478E8)
 REX_HOOK_RAW(sub_8264ADE0)
 {
   const uint32_t object = ctx.r3.u32;
+  pdz::minigame::NoteDemoKit(object); // minigame_input.cpp: the demo kit's tile puzzle reads the left stick too
   if (!Enabled() || !IsGuestPointer(object))
   {
     __imp__sub_8264ADE0(ctx, base);
@@ -396,6 +398,9 @@ REX_HOOK_RAW(sub_8264ADE0)
 }
 
 void PdzCharacterHit(uint32_t victim); // cut_scenarios.cpp: Protection, hack under fire
+#if PDZ_COUNTEROP
+bool PdzCounterOpIsPlayer2(uint32_t character); // counter_op.cpp: player 2 of a running counter-op game
+#endif
 
 // sub_825AAF50 [8259B738](victim, attacker, f1 damage, ...): player damage.
 REX_HOOK_RAW(sub_825AAF50)
@@ -413,11 +418,44 @@ REX_HOOK_RAW(sub_825AAF50)
   // pdz_test_god_mode (testing tool): the player's damage handler (this
   // hook, the player class) runs with no damage, so the hit still happens
   // (enemies keep shooting and reacting) but no health is lost.
-  if (REXCVAR_GET(pdz_test_god_mode) && ctx.f1.f64 > 0.0)
+#if PDZ_COUNTEROP
+  // Counter-op: god mode is for the agent; player 2 (the counter-operative) can still be killed.
+  const bool counterop_p2 = PdzCounterOpIsPlayer2(ctx.r3.u32);
+#else
+  const bool counterop_p2 = false;
+#endif
+  if (REXCVAR_GET(pdz_test_god_mode) && ctx.f1.f64 > 0.0 && !counterop_p2)
   {
     ctx.f1.f64 = 0.0;
   }
+#if PDZ_COUNTEROP
+  // Counter-op diagnostic: what reaches player 2's damage handler (the agent's hits did no damage in co_jungle_2).
+  static int counterop_lines = 0;
+  const auto f32 = [base](uint32_t a) {
+    uint32_t v = (uint32_t(base[a]) << 24) | (uint32_t(base[a + 1]) << 16) | (uint32_t(base[a + 2]) << 8) | base[a + 3];
+    float f;
+    std::memcpy(&f, &v, 4);
+    return f;
+  };
+  const uint32_t victim = ctx.r3.u32, attacker = ctx.r4.u32;
+  const double damage_in = ctx.f1.f64, f2_in = ctx.f2.f64;
+  const uint32_t r7_in = ctx.r7.u32;
+  const auto human_health = [base, &f32](uint32_t c) { // [+6560 participant]+980: a human's health
+    const uint32_t p = (uint32_t(base[c + 6560]) << 24) | (uint32_t(base[c + 6561]) << 16) | (uint32_t(base[c + 6562]) << 8) | base[c + 6563];
+    return p >= 0x10000u ? f32(p + 980) : f32(c + 120);
+  };
+  const float health_before = counterop_p2 ? human_health(victim) : 0.0f;
+#endif
   __imp__sub_825AAF50(ctx, base);
+#if PDZ_COUNTEROP
+  if (counterop_p2 && counterop_lines < 40)
+  {
+    ++counterop_lines;
+    REXLOG_INFO("pdz_counterop: damage handler 825AAF50: player 2 {:08X} from {:08X}: damage {:.2f}, f2 {:.2f}, part {}, "
+                "floor +7828 {:.2f}, health {:.2f} -> {:.2f}",
+                victim, attacker, damage_in, f2_in, r7_in, f32(victim + 7828), health_before, human_health(victim));
+  }
+#endif
 }
 
 namespace minigame_log

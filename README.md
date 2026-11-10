@@ -81,7 +81,7 @@ The US Platinum Hits disc works as it is:
 
 ## Status
 
-Status: 0.9.3.1 is the current release (November 2026). It's playable from start to finish; see the release notes for what's new. So far it has been tested on one PC with NVIDIA GPU.
+Status: 0.9.4 is the current release (November 2026). It's playable from start to finish; see the release notes for what's new. So far it has been tested on one PC with NVIDIA GPU.
 
 Reports from other PCs are very welcome, especially with AMD or Intel graphics cards or older processors. Please
 [open an issue](https://github.com/EddieVanHelgen/PerfectDarkZeroRestored/issues) and attach the newest log from

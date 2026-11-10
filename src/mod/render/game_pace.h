@@ -36,7 +36,7 @@ namespace pdz::pace
   uint32_t RefreshHz();
 
   // The frame rate the current scene is paced at: RefreshHz / the guest vblank divider (pdz_sp_120: 60 in a
-  // multiplayer level), 0 when off.
+  // multiplayer level; pdz_splitscreen_cap: 60 / 40 / 30 while local players share the screen), 0 when off.
   uint32_t EffectiveHz();
 
   // game_patches.cpp: the presentation interval patch (pdz_fps60_unlock) is applied whenever this is true.

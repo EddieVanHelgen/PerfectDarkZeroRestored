@@ -63,6 +63,7 @@
 #include <rex/logging.h>
 
 #include "../game_cvars.h"
+#include "aim_assist.h"
 #include "hook_profile.h" // pdz_hook_profile (must follow <rex/hook.h>)
 
 REX_EXTERN(__imp__sub_821B5A68);
@@ -738,6 +739,7 @@ REX_HOOK_RAW(sub_821B5DF8)
 REX_HOOK_RAW(sub_8223FC00)
 {
   const uint32_t shooter = ctx.r3.u32;
+  aim_assist::OnShotTU3(base, shooter, ctx.r5.u32, ctx.r6.u32); // pdz_autoaim_log (cheap when off)
   if (REXCVAR_GET(pdz_ai_behaviour_log) || REXCVAR_GET(pdz_ai_shoot_from_here))
   {
     std::lock_guard<std::mutex> lock(g_mutex);

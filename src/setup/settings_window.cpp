@@ -7,6 +7,7 @@
 #include "theme.h"
 #include "update_check.h"
 #include "../mod/render/native/native_dxc.h" // DeveloperBuild
+#include "../mod/minigame_input.h"            // the Locktopus: the shared pick step and Rare's pin rules
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -21,7 +22,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <map>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -60,7 +63,17 @@ REXCVAR_DEFINE_INT32(pdz_settings_test_dpi, 0, "Testing",
 REXCVAR_DEFINE_STRING(pdz_settings_test_answer, "swap", "Testing",
                       "TESTING TOOL: the answer pdz_settings_test_rebind gives when an input is already used: swap, "
                       "both or cancel");
+REXCVAR_DEFINE_STRING(pdz_settings_test_dial, "", "Testing",
+                      "TESTING TOOL: the settings window plays the Controls tab's practice Locktopus dial by itself, "
+                      "';'-separated runs of keys, mouse or ignore (the inputs the Mouse / Keys choice leaves out must "
+                      "not move the pick), each on a new lock from a fixed seed, through the dial's own step (the "
+                      "game's steering code and Rare's pin rules) with simulated keys or mouse counts. Every step that "
+                      "matters is logged; with pdz_settings_test_capture each run's end is captured as dial_<n>.bmp")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DECLARE(bool, pdz_setup_quiet);
+REXCVAR_DECLARE(bool, pdz_fix_minigame_keyboard);
+REXCVAR_DECLARE(std::string, pdz_minigame_inputs);
+REXCVAR_DECLARE(double, pdz_minigame_mouse_counts);
 REXCVAR_DECLARE(bool, pdz_update_check);
 REXCVAR_DECLARE(bool, pdz_setup_restarted); // first_run.cpp: setup's own restart after adding TU3
 
@@ -391,6 +404,8 @@ namespace pdz::settings_ui
       kCampaignNote,
       kMultiplayer,
       kMultiplayerNote,
+      kSplitCap,     // Frame rate: Split screen Auto / 60 / 40 / 30 (pdz_splitscreen_cap)
+      kSplitCapNote,
       kPackName0 = 200,
       kPackMaps0 = 210,
       kPackStatus0 = 220,
@@ -406,6 +421,18 @@ namespace pdz::settings_ui
       kBindChange2,
       kBindClear,
       kBindReset,
+      kBindWarning, // Controls: the Start-has-no-menu-key warning line (empty when there is nothing to say)
+      kLockHeading, // Controls: the Locktopus group
+      kLockInputsLabel,
+      kLockInputs,  // Mouse / Keys / Both (pdz_minigame_inputs)
+      kLockSensLabel,
+      kLockSens,    // the mouse sensitivity trackbar (pdz_minigame_mouse_counts)
+      kLockLow,
+      kLockHigh,
+      kLockKeys,    // the keys, as text
+      kLockDial,    // the practice dial (owner-drawn)
+      kLockNewLock,
+      kLockDifficulty, // the practice dial's Agent / Secret Agent / Perfect Agent (Rare's radius)
       kOpenSettings = 400,
       kOpenLogs,
       kRebuild,
@@ -462,12 +489,43 @@ namespace pdz::settings_ui
       std::map<int, Drop> drops; // our drop-down lists (Monitor, Resolution), by id
       HWND list_scroll = nullptr; // the key list's scroll bar (ours; the list's own is clipped off)
       int list_scroll_top = -1;   // the top row it last showed
+      bool list_placed = false;   // PlaceKeyList has run once
       HWND tab_buttons[kTabCount] = {};
+      // The Controls tab's Locktopus practice dial: the game's pick (minigame_input.h's shared step) on a lock of 2-3
+      // pins with Rare's rules (the Secret Agent radius, a 1 s hold).
+      struct Dial
+      {
+        HWND wnd = nullptr;
+        pdz::minigame::Pick pick;
+        struct Pin
+        {
+          double x = 0.0, y = 0.0; // stick position, x right, y up
+          bool set = false;
+        };
+        std::vector<Pin> pins;
+        int cur = 0;
+        double hold = pdz::minigame::kPinHoldSeconds;
+        double radius = pdz::minigame::kPinRadiusSecretAgent;
+        bool done = false;
+        bool captured = false;     // the mouse is held by the dial (a click; click or Esc lets go)
+        bool hover = false;        // the pointer is over it
+        double mdx = 0.0, mdy = 0.0; // raw mouse counts since the last step
+        LARGE_INTEGER last{};
+        std::mt19937 rng{12345u};
+        int locks = 0;
+        bool test = false;         // pdz_settings_test_dial: the inputs below instead of the keyboard and mouse
+        double tkx = 0.0, tky = 0.0, tdx = 0.0, tdy = 0.0;
+        bool tslow = false;
+        double elapsed = 0.0;      // seconds in this lock
+        int lock = -1;             // kRareLocks index of the lock on the dial
+        int force_lock = -1;       // pdz_settings_test_dial: this lock for the next New lock
+      } dial;
       // The update check (update_check.h): the newer release, once known, shown in the side bar.
       std::string update_version, update_page;
       int px(int v) const { return MulDiv(v, dpi, 96); }
     };
-    // The layout (logical pixels at 96 dpi): side bar, content, help strip, footer.
+    // The layout (logical pixels at 96 dpi): side bar, content, help strip, footer. Page controls end above the help
+    // strip: their y (from kContentDy) + height <= kWindowH - kFooterH - kHelpH - kContentDy = 460.
     constexpr int kWindowW = 880, kWindowH = 640, kSideW = 200, kFooterH = 72, kHelpH = 68;
     // Page controls are laid out from (28, 48) as before; they sit right of the side bar and under the heading.
     constexpr int kContentDx = kSideW + 4, kContentDy = 40;
@@ -501,9 +559,28 @@ namespace pdz::settings_ui
       return c;
     }
 
+    // The help strip's text (owner-drawn: up to two lines, centred beside the info icon).
+    void SetHelp(Ui &ui, const std::wstring &text)
+    {
+      wchar_t shown[1024] = {};
+      GetWindowTextW(ui.help, shown, 1024);
+      if (text != shown)
+      {
+        SetWindowTextW(ui.help, text.c_str());
+        InvalidateRect(ui.help, nullptr, FALSE);
+      }
+    }
+
+    // The Locktopus group's helpers (defined with the dial, below).
+    void RefreshLockText(Ui &ui);
+    void DialRelease(Ui &ui);
+    double LockCountsOfPos(int pos);
+    int LockPosOfCounts(double counts);
+    pdz::minigame::PickInputs LockInputsOfSel(int sel);
+
     HWND Label(Ui &ui, int tab, const std::wstring &text, int x, int y, int w, bool bold = false)
     {
-      HWND c = Add(ui, tab, L"STATIC", text, SS_LEFT, x, y, w, 18, 0);
+      HWND c = Add(ui, tab, L"STATIC", text, SS_LEFT, x, y, w, 22, 0);
       if (bold)
       {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(ui.bold), TRUE);
@@ -826,6 +903,7 @@ namespace pdz::settings_ui
 
     void ShowTab(Ui &ui, int tab)
     {
+      DialRelease(ui);
       ui.tab = tab;
       for (HWND b : ui.tab_buttons)
       {
@@ -839,7 +917,7 @@ namespace pdz::settings_ui
           ShowWindow(c, t == tab ? SW_SHOW : SW_HIDE);
         }
       }
-      SetWindowTextW(ui.help, ui.tab_help[tab].c_str());
+      SetHelp(ui, ui.tab_help[tab]);
     }
 
     void RefreshPacks(Ui &ui, bool deep)
@@ -1059,6 +1137,110 @@ namespace pdz::settings_ui
       SendMessageW(list, LVM_SETITEMTEXTW, WPARAM(row), reinterpret_cast<LPARAM>(&it));
     }
 
+    // The menus' own keys (the SDK's mnk menu mode, mnk_input_driver.cpp kMenuKeys: left / right click, Enter, Esc,
+    // the wheel; Numpad Enter is Enter to it). While a menu is up those keys do the menu's work and no bind sees them,
+    // so a Start bound only to them gives no Start in menus (the multiplayer setup screen needs one). A modifier
+    // doesn't help: the key itself is masked.
+    bool MenuReservedInput(const std::string &token)
+    {
+      const auto [mods, key] = SplitModifiers(token);
+      const uint16_t code = rex::ui::ParseInputCode(key);
+      return code == 0x01 /* LMB */ || code == 0x02 /* RMB */ || code == 0x0D /* Enter */ || code == 0x1B /* Esc */ ||
+             code == rex::ui::kInputCodeWheelUp || code == rex::ui::kInputCodeWheelDown ||
+             code == rex::ui::kInputCodeScancodeBase + 88 /* SDL_SCANCODE_KP_ENTER */;
+    }
+
+    // The Controls tab's warning line: shown while Start (keybind_start) has no key the menus leave alone (or no key
+    // at all); empty otherwise. Called with every change of the rows (RefreshBinds).
+    // The key list and its buttons (logical units, tab coordinates): with the Start warning the list is 146 tall and
+    // the warning sits under the buttons; without it the list takes the warning's room (186). The list's own scroll
+    // bar is clipped off by a window region (ours sits over its place), and the columns fill its client width, so
+    // there is never a horizontal scroll bar.
+    void PlaceKeyList(Ui &ui, bool warning)
+    {
+      if (!ui.list)
+      {
+        return;
+      }
+      const int x = 28, y = 84, w = 604, h = warning ? 146 : 186, by = y + h + 8;
+      auto at = [&](HWND c, int cx, int cy, int cw, int ch)
+      {
+        MoveWindow(c, ui.px(cx + kContentDx), ui.px(cy + kContentDy), ui.px(cw), ui.px(ch), TRUE);
+      };
+      at(ui.list, x, y, w, h);
+      at(GetDlgItem(ui.window, kBindChange1), x, by - 2, 120, 32);
+      at(GetDlgItem(ui.window, kBindChange2), x + 128, by - 2, 120, 32);
+      at(GetDlgItem(ui.window, kBindClear), x + 256, by - 2, 80, 32);
+      at(GetDlgItem(ui.window, kBindReset), x + 404, by - 2, 200, 32);
+      // The warning's own place, or nothing (an empty static over the buttons would paint over them).
+      if (HWND w_line = GetDlgItem(ui.window, kBindWarning))
+      {
+        at(w_line, x, 274, 604, warning ? 40 : 0);
+      }
+      RECT wr, cr;
+      GetWindowRect(ui.list, &wr);
+      MapWindowPoints(nullptr, ui.window, reinterpret_cast<POINT *>(&wr), 2);
+      GetClientRect(ui.list, &cr);
+      // The list's own vertical scroll bar (always there: more rows than fit), at the DPI the list itself uses; the
+      // client width is taken from it, not from GetClientRect, which may not count the bar until the list repaints.
+      const int border = 1;
+      const int sb = GetSystemMetricsForDpi(SM_CXVSCROLL, GetDpiForWindow(ui.list));
+      cr.right = std::max<LONG>(0, (wr.right - wr.left) - 2 * border - sb);
+      SetWindowRgn(ui.list, CreateRectRgn(0, 0, (wr.right - wr.left) - sb - border, wr.bottom - wr.top), TRUE);
+      if (ui.list_scroll)
+      {
+        MoveWindow(ui.list_scroll, wr.right - sb - border, wr.top, sb + border, wr.bottom - wr.top, TRUE);
+      }
+      const int client = int(cr.right) - 1;
+      const int action = client * 45 / 100, key = (client - action) / 2;
+      SendMessageW(ui.list, LVM_SETCOLUMNWIDTH, 0, action);
+      SendMessageW(ui.list, LVM_SETCOLUMNWIDTH, 1, key);
+      SendMessageW(ui.list, LVM_SETCOLUMNWIDTH, 2, client - action - key);
+      ui.list_scroll_top = -1;
+      if (ui.list_scroll)
+      {
+        InvalidateRect(ui.list_scroll, nullptr, FALSE);
+      }
+    }
+
+    void UpdateStartWarning(Ui &ui)
+    {
+      HWND warning = GetDlgItem(ui.window, kBindWarning);
+      if (!warning)
+      {
+        return;
+      }
+      std::wstring text;
+      for (int r = 0; r < kBindRowCount && r < int(ui.binds.size()); ++r)
+      {
+        if (std::string(kBindRows[r].cvar) != "keybind_start")
+        {
+          continue;
+        }
+        const auto &tokens = ui.binds[size_t(r)];
+        const bool usable = std::any_of(tokens.begin(), tokens.end(),
+                                        [](const std::string &t) { return !MenuReservedInput(t); });
+        if (!usable)
+        {
+          text = tokens.empty()
+                     ? L"Start has no key, so the menus have no Start and a multiplayer match can't be started. Add a "
+                       L"plain key such as P (P is Start in menus by default)."
+                     : L"Start only has keys the menus use for other things (Enter, Esc, the mouse buttons), so the "
+                       L"menus have no Start and a multiplayer match can't be started. Add a plain key such as P.";
+        }
+      }
+      wchar_t shown[512] = {};
+      GetWindowTextW(warning, shown, 512);
+      if (text != shown || !ui.list_placed)
+      {
+        SetWindowTextW(warning, text.c_str());
+        InvalidateRect(warning, nullptr, TRUE);
+        ui.list_placed = true;
+        PlaceKeyList(ui, !text.empty());
+        InvalidateRect(ui.window, nullptr, FALSE);
+      }
+    }
+
     void RefreshBinds(Ui &ui)
     {
       for (int r = 0; r < kBindRowCount; ++r)
@@ -1066,6 +1248,8 @@ namespace pdz::settings_ui
         SetCell(ui.list, r, 1, SlotText(ui, r, 0));
         SetCell(ui.list, r, 2, SlotText(ui, r, 1));
       }
+      UpdateStartWarning(ui);
+      RefreshLockText(ui);
     }
 
     int SelectedRow(const Ui &ui)
@@ -1106,7 +1290,7 @@ namespace pdz::settings_ui
       {
         RefreshBinds(ui);
       }
-      SetWindowTextW(ui.help, ui.tab_help[kTabControls].c_str());
+      SetHelp(ui, ui.tab_help[kTabControls]);
     }
 
     void StartCapture(Ui &ui, int row, int slot, bool by_click = false)
@@ -1121,7 +1305,7 @@ namespace pdz::settings_ui
       ui.cap_started = GetTickCount();
       SendMessageW(ui.list, LVM_ENSUREVISIBLE, WPARAM(row), FALSE);
       RefreshBinds(ui);
-      SetWindowTextW(ui.help, kWaiting);
+      SetHelp(ui, std::wstring(kWaiting));
       SetFocus(ui.list);
       SetCapture(ui.window);
       RawMouse(ui, true);
@@ -1380,6 +1564,8 @@ namespace pdz::settings_ui
       keys.push_back({"pdz_fov_scale", fmt::format("{:.3f}", FovScaleOfPosition(fov_pos))});
       const int fps = Sel(ui, kCampaign); // auto, 120, 60
       keys.push_back({"pdz_sp_120", fps == 2 ? "false" : "true"});
+      const int split = Sel(ui, kSplitCap); // auto, 60, 40, 30 (pdz_splitscreen_cap: 0 = auto)
+      keys.push_back({"pdz_splitscreen_cap", split == 1 ? "60" : split == 2 ? "40" : split == 3 ? "30" : "0"});
       keys.push_back({"pdz_settings_show", Checked(ui, kDontShow) ? "false" : "true"});
       keys.push_back({"pdz_update_check", Checked(ui, kUpdateCheck) ? "true" : "false"});
       WriteKeys(ui.ctx.settings_file, keys);
@@ -1398,6 +1584,32 @@ namespace pdz::settings_ui
       {
         mapping.push_back({"pdz_zoom_steps", zoom_steps});
         rex::cvar::SetFlagByName("pdz_zoom_steps", zoom_steps);
+      }
+      // Locktopus: what steers the pick and the mouse sensitivity, written only when they change (like step zoom);
+      // a choice made here also switches the keyboard / mouse Locktopus on (pdz_fix_minigame_keyboard).
+      {
+        const std::string inputs = pdz::minigame::PickInputsName(LockInputsOfSel(Sel(ui, kLockInputs)));
+        const double counts =
+            LockCountsOfPos(int(SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_GETPOS, 0, 0)));
+        const int now_pos = LockPosOfCounts(REXCVAR_GET(pdz_minigame_mouse_counts));
+        const bool inputs_changed = inputs != REXCVAR_GET(pdz_minigame_inputs);
+        const bool counts_changed =
+            int(SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_GETPOS, 0, 0)) != now_pos;
+        if (inputs_changed)
+        {
+          mapping.push_back({"pdz_minigame_inputs", "\"" + inputs + "\""});
+          rex::cvar::SetFlagByName("pdz_minigame_inputs", inputs);
+        }
+        if (counts_changed)
+        {
+          mapping.push_back({"pdz_minigame_mouse_counts", fmt::format("{:.0f}", counts)});
+          rex::cvar::SetFlagByName("pdz_minigame_mouse_counts", fmt::format("{:.0f}", counts));
+        }
+        if ((inputs_changed || counts_changed) && !REXCVAR_GET(pdz_fix_minigame_keyboard))
+        {
+          mapping.push_back({"pdz_fix_minigame_keyboard", "true"});
+          rex::cvar::SetFlagByName("pdz_fix_minigame_keyboard", "true");
+        }
       }
       mapping.insert(mapping.end(), binds.begin(), binds.end());
       WriteKeys(ui.ctx.mapping_file, mapping);
@@ -1435,7 +1647,8 @@ namespace pdz::settings_ui
     {
       WriteKeys(ui.ctx.settings_file, {{"monitor", ""}, {"fullscreen_exclusive", ""}, {"resolution", ""},
                                        {"pdz_native_scale", ""}, {"pdz_present_pacing", ""}, {"vsync", ""},
-                                       {"pdz_sp_120", ""}, {"pdz_settings_show", ""}, {"pdz_update_check", ""}});
+                                       {"pdz_sp_120", ""}, {"pdz_splitscreen_cap", ""}, {"pdz_settings_show", ""},
+                                       {"pdz_update_check", ""}});
       ResetBinds(ui);
       std::vector<std::pair<std::string, std::string>> mapping = {{"pdz_mouse_sensitivity", "2.0"},
                                                                   {"pdz_mouse_invert", "false"}};
@@ -1455,9 +1668,16 @@ namespace pdz::settings_ui
       WriteKeys(ui.ctx.settings_file, {{"pdz_fov_scale", "1.000"}});
       rex::cvar::SetFlagByName("pdz_fov_scale", "1.0");
       SetSel(ui, kCampaign, 0);
+      SetSel(ui, kSplitCap, 0);
+      rex::cvar::SetFlagByName("pdz_splitscreen_cap", "0");
       SetWindowTextW(GetDlgItem(ui.window, kSensitivity), L"2.00");
       SetChecked(ui, kInvert, false);
       SetChecked(ui, kZoomSteps, false);
+      SetSel(ui, kLockInputs, 2);
+      SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_SETPOS, TRUE, LockPosOfCounts(400.0));
+      WriteKeys(ui.ctx.mapping_file, {{"pdz_minigame_inputs", ""}, {"pdz_minigame_mouse_counts", ""}});
+      rex::cvar::SetFlagByName("pdz_minigame_inputs", "both");
+      rex::cvar::SetFlagByName("pdz_minigame_mouse_counts", "400");
       SetChecked(ui, kUpdateCheck, true);
       rex::cvar::SetFlagByName("pdz_update_check", "true");
       if (rex::cvar::GetFlagByName("pdz_zoom_steps") == "true")
@@ -1467,6 +1687,608 @@ namespace pdz::settings_ui
       }
       Box(ui.window, L"Everything in this window is back to its default.", L"PDZ Restored Settings",
                   MB_OK | MB_ICONINFORMATION);
+    }
+
+    // ---- Controls: the Locktopus group and its practice dial ----
+
+    // The mouse sensitivity trackbar: 0..20, Low (800 counts to full deflection) .. High (80); the default 400 is the
+    // middle (two halves, each even on a log scale).
+    constexpr int kLockSensMax = 20;
+    double LockCountsOfPos(int pos)
+    {
+      pos = std::clamp(pos, 0, kLockSensMax);
+      return pos <= 10 ? 800.0 * std::pow(0.5, pos / 10.0) : 400.0 * std::pow(0.2, (pos - 10) / 10.0);
+    }
+    int LockPosOfCounts(double counts)
+    {
+      counts = std::clamp(counts, 80.0, 800.0);
+      const double pos = counts >= 400.0 ? 10.0 * std::log(counts / 800.0) / std::log(0.5)
+                                         : 10.0 + 10.0 * std::log(counts / 400.0) / std::log(0.2);
+      return std::clamp(int(std::lround(pos)), 0, kLockSensMax);
+    }
+    // The Mouse / Keys / Both choice <-> pdz_minigame_inputs.
+    pdz::minigame::PickInputs LockInputsOfSel(int sel)
+    {
+      return sel == 0 ? pdz::minigame::PickInputs::kMouse
+             : sel == 1 ? pdz::minigame::PickInputs::kKeys
+                        : pdz::minigame::PickInputs::kBoth;
+    }
+    int LockSelOfInputs(pdz::minigame::PickInputs inputs)
+    {
+      return inputs == pdz::minigame::PickInputs::kMouse ? 0 : inputs == pdz::minigame::PickInputs::kKeys ? 1 : 2;
+    }
+
+    // The window's live choices for the pick: the game's own tuning with the Mouse / Keys / Both choice and the
+    // sensitivity slider as they are now (not yet saved).
+    pdz::minigame::SteerTuning LockTuning(Ui &ui)
+    {
+      pdz::minigame::SteerTuning t = pdz::minigame::LiveTuning();
+      t.inputs = LockInputsOfSel(Sel(ui, kLockInputs));
+      t.mouse_counts = LockCountsOfPos(int(SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_GETPOS, 0, 0)));
+      return t;
+    }
+
+    // The tokens bound now (the key list's rows, unsaved changes included) for a keybind cvar.
+    const std::vector<std::string> &LockBinds(Ui &ui, const char *cvar)
+    {
+      static const std::vector<std::string> none;
+      for (int r = 0; r < kBindRowCount && r < int(ui.binds.size()); ++r)
+      {
+        if (std::string(kBindRows[r].cvar) == cvar)
+        {
+          return ui.binds[size_t(r)];
+        }
+      }
+      return none;
+    }
+    // A row's first key's name ("A"), or "-" if it has none.
+    std::wstring LockKeyName(Ui &ui, const char *cvar)
+    {
+      const auto &t = LockBinds(ui, cvar);
+      return t.empty() ? std::wstring(L"-") : TokenName(t[0]);
+    }
+    // The Locktopus line with the live keys (the default binds give the line exactly as written).
+    std::wstring LockLine(Ui &ui)
+    {
+      return L"Locktopus (lock-pick gadget): move the mouse to steer the pick, or use " +
+             LockKeyName(ui, "keybind_lstick_left") + L" / " + LockKeyName(ui, "keybind_lstick_right") +
+             L" to turn it and " + LockKeyName(ui, "keybind_lstick_up") + L" / " +
+             LockKeyName(ui, "keybind_lstick_down") + L" to push it in or out. Hold it on a pin until it sets.";
+    }
+    std::wstring LockKeysText(Ui &ui)
+    {
+      return L"Keys: " + LockKeyName(ui, "keybind_lstick_left") + L" / " + LockKeyName(ui, "keybind_lstick_right") +
+             L" turn, " + LockKeyName(ui, "keybind_lstick_up") + L" / " + LockKeyName(ui, "keybind_lstick_down") +
+             L" push in or out, Shift slows (your Move and Strafe keys; the Look keys too).";
+    }
+    void RefreshLockText(Ui &ui)
+    {
+      HWND keys = GetDlgItem(ui.window, kLockKeys);
+      if (!keys)
+      {
+        return;
+      }
+      const std::wstring text = LockKeysText(ui);
+      wchar_t shown[512] = {};
+      GetWindowTextW(keys, shown, 512);
+      if (text != shown)
+      {
+        SetWindowTextW(keys, text.c_str());
+        InvalidateRect(keys, nullptr, TRUE);
+      }
+      const std::wstring line = LockLine(ui);
+      for (int id : {kLockHeading, kLockKeys, kLockInputsLabel})
+      {
+        if (HWND c = GetDlgItem(ui.window, id))
+        {
+          ui.help_of[c] = line;
+        }
+      }
+    }
+
+    // Is any key bound to this cvar held (keyboard keys with a virtual key code; mouse buttons and modifiers ignored)?
+    bool LockHeld(Ui &ui, const char *cvar)
+    {
+      for (const std::string &token : LockBinds(ui, cvar))
+      {
+        const auto [mods, key] = SplitModifiers(token);
+        if (!mods.empty())
+        {
+          continue;
+        }
+        const uint16_t code = rex::ui::ParseInputCode(key);
+        if (code > 0x07 && code < 0x100 && (GetAsyncKeyState(code) & 0x8000) != 0)
+        {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Rare's 12 Locktopus lock datas (docs/MOUSE_KEYBOARD.md, "The 12 locks"): their pins in Rare's order, as the
+    // stick position each pin wants (x right, y up; deflection over 1 = a corner of the stick's square). Exact bytes
+    // over 128 where the data's bytes are known (the Mansion intercom door, Subway's diversion side door), else from the
+    // table's angle and deflection.
+    struct RareLock
+    {
+      const char *name;
+      int count;
+      double pin[8][2]; // {x, y} for byte pins, {angle degrees, deflection} for table pins (polar = true)
+      bool polar;
+    };
+    const RareLock kRareLocks[] = {
+        {"club_officebackdoor", 2, {{90, 0.94}, {0, 0.94}}, true},
+        {"club_autogunroom", 2, {{0, 0.86}, {180, 0.86}}, true},
+        {"ware_factorysidedoor", 3, {{45, 1.10}, {0, 0.78}, {225, 1.10}}, true},
+        {"ware_diversionsidedoor", 3, {{45 / 128.0, 100 / 128.0}, {-100 / 128.0, 30 / 128.0}, {-30 / 128.0, 100 / 128.0}},
+         false},
+        {"labo_generatorswitch", 6, {{309, 1.11}, {212, 1.02}, {252, 0.90}, {90, 0.94}, {138, 1.15}, {308, 1.08}}, true},
+        {"labo_gasvalve", 6, {{45, 1.10}, {227, 1.18}, {350, 0.87}, {224, 1.19}, {38, 1.09}, {310, 1.13}}, true},
+        {"mans_ladderlock1", 4, {{42, 1.11}, {221, 1.08}, {138, 1.06}, {306, 0.97}}, true},
+        {"mans_intercomdoor", 4,
+         {{47 / 128.0, 102 / 128.0}, {-10 / 128.0, -90 / 128.0}, {90 / 128.0, -40 / 128.0}, {-88 / 128.0, -60 / 128.0}},
+         false},
+        {"airp_main_gate", 6, {{45, 1.10}, {125, 1.00}, {240, 0.94}, {0, 0.86}, {217, 1.03}, {241, 0.94}}, true},
+        {"cs2_water_valve", 8,
+         {{217, 1.03}, {240, 0.91}, {0, 0.86}, {127, 0.97}, {240, 0.94}, {45, 1.10}, {217, 1.03}, {125, 1.00}}, true},
+        {"ruin_nice_and_easy_for_chris", 1, {{270, 0.94}}, true},
+        {"test", 3, {{318, 1.05}, {125, 0.86}, {37, 0.78}}, true},
+    };
+    constexpr int kRareLockCount = int(sizeof(kRareLocks) / sizeof(kRareLocks[0]));
+    constexpr double kDialRadius[3] = {pdz::minigame::kPinRadiusAgent, pdz::minigame::kPinRadiusSecretAgent,
+                                       pdz::minigame::kPinRadiusPerfectAgent};
+
+    // A new lock: one of Rare's 12 locks at random (its pins, in Rare's order).
+    void DialNewLock(Ui &ui)
+    {
+      Ui::Dial &d = ui.dial;
+      int lock = d.force_lock;
+      if (lock < 0 || lock >= kRareLockCount)
+      {
+        lock = std::uniform_int_distribution<int>(0, kRareLockCount - 1)(d.rng);
+      }
+      d.force_lock = -1;
+      d.lock = lock;
+      const RareLock &l = kRareLocks[lock];
+      d.pins.clear();
+      for (int i = 0; i < l.count; ++i)
+      {
+        if (l.polar)
+        {
+          const double a = l.pin[i][0] * 3.14159265358979323846 / 180.0;
+          d.pins.push_back({l.pin[i][1] * std::cos(a), l.pin[i][1] * std::sin(a), false});
+        }
+        else
+        {
+          d.pins.push_back({l.pin[i][0], l.pin[i][1], false});
+        }
+      }
+      d.cur = 0;
+      d.hold = pdz::minigame::kPinHoldSeconds;
+      d.done = false;
+      d.pick = pdz::minigame::Pick{};
+      d.elapsed = 0.0;
+      ++d.locks;
+      if (d.wnd)
+      {
+        InvalidateRect(d.wnd, nullptr, FALSE);
+      }
+    }
+
+    void DialRelease(Ui &ui)
+    {
+      Ui::Dial &d = ui.dial;
+      if (!d.captured)
+      {
+        return;
+      }
+      d.captured = false;
+      ClipCursor(nullptr);
+      ShowCursor(TRUE);
+      if (GetCapture() == d.wnd)
+      {
+        ReleaseCapture();
+      }
+      if (d.wnd)
+      {
+        InvalidateRect(d.wnd, nullptr, FALSE);
+      }
+    }
+
+    // One step of the dial, dt seconds: the inputs (keys while it has the focus, the mouse while it is pointed at or
+    // holds the mouse; or the test's), the game's steering step, Rare's hold rule on the current pin.
+    void DialStep(Ui &ui, double dt)
+    {
+      Ui::Dial &d = ui.dial;
+      double kx = 0.0, ky = 0.0, mdx = 0.0, mdy = 0.0;
+      bool slow = false;
+      if (d.test)
+      {
+        kx = d.tkx;
+        ky = d.tky;
+        slow = d.tslow;
+        mdx = d.tdx;
+        mdy = d.tdy;
+      }
+      else
+      {
+        if (GetFocus() == d.wnd && GetForegroundWindow() == ui.window)
+        {
+          kx = (LockHeld(ui, "keybind_lstick_right") || LockHeld(ui, "keybind_rstick_right") ? 1.0 : 0.0) -
+               (LockHeld(ui, "keybind_lstick_left") || LockHeld(ui, "keybind_rstick_left") ? 1.0 : 0.0);
+          ky = (LockHeld(ui, "keybind_lstick_up") || LockHeld(ui, "keybind_rstick_up") ? 1.0 : 0.0) -
+               (LockHeld(ui, "keybind_lstick_down") || LockHeld(ui, "keybind_rstick_down") ? 1.0 : 0.0);
+          slow = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        }
+        mdx = d.mdx;
+        mdy = d.mdy;
+      }
+      d.mdx = d.mdy = 0.0;
+      d.radius = kDialRadius[std::clamp(Sel(ui, kLockDifficulty), 0, 2)]; // Agent / Secret Agent / Perfect Agent
+      const bool moved = pdz::minigame::SteerPick(d.pick, LockTuning(ui), kx, ky, slow, mdx, mdy, dt);
+      bool changed = moved;
+      if (!d.done && d.cur < int(d.pins.size()))
+      {
+        d.elapsed += dt;
+        const double x = d.pick.radius * std::cos(d.pick.angle), y = d.pick.radius * std::sin(d.pick.angle);
+        const double before = d.hold;
+        auto &pin = d.pins[size_t(d.cur)];
+        if (pdz::minigame::StepPinHold(d.hold, x, y, pin.x, pin.y, d.radius, dt))
+        {
+          pin.set = true;
+          if (d.test || ui.testing)
+          {
+            Note(fmt::format("pdz_settings: test dial: lock {} pin {} of {} SET at {:.2f} s (pin {:+.2f} {:+.2f}, "
+                             "deflection {:.2f}; pick {:+.2f} {:+.2f})",
+                             d.locks, d.cur + 1, d.pins.size(), d.elapsed, pin.x, pin.y, std::hypot(pin.x, pin.y), x,
+                             y));
+          }
+          ++d.cur;
+          d.hold = pdz::minigame::kPinHoldSeconds;
+          if (d.cur >= int(d.pins.size()))
+          {
+            d.done = true;
+            if (d.test || ui.testing)
+            {
+              Note(fmt::format("pdz_settings: test dial: lock {} Unlocked! after {:.2f} s", d.locks, d.elapsed));
+            }
+          }
+        }
+        changed = changed || d.hold != before;
+      }
+      if (changed && d.wnd)
+      {
+        InvalidateRect(d.wnd, nullptr, FALSE);
+      }
+    }
+
+    void DialPaint(Ui &ui, HDC target, const RECT &rc)
+    {
+      Ui::Dial &d = ui.dial;
+      HDC dc = CreateCompatibleDC(target);
+      HBITMAP bmp = CreateCompatibleBitmap(target, rc.right, rc.bottom);
+      HGDIOBJ old_bmp = SelectObject(dc, bmp);
+      const bool focus = GetFocus() == d.wnd;
+      theme::FillRect(dc, rc, theme::kBackground);
+      theme::FillRound(dc, rc, ui.px(6), theme::kPanel, focus || d.captured ? theme::kCyan : theme::kBorder);
+      const int size = std::min(rc.right, rc.bottom) - ui.px(12);
+      // Rare's corner pins reach a deflection of 1.19 (the stick's square): the circle (1.0) leaves them room.
+      const int cx = rc.right / 2, cy = rc.bottom / 2, R = int(size / 2 / 1.22);
+      auto at = [&](double x, double y) { return POINT{cx + int(std::lround(x * R)), cy - int(std::lround(y * R))}; };
+      auto circle = [&](POINT c, int r, COLORREF pen_colour, COLORREF fill, bool filled, int width)
+      {
+        HPEN pen = CreatePen(PS_SOLID, std::max(1, width), pen_colour);
+        HBRUSH brush = filled ? CreateSolidBrush(fill) : nullptr;
+        HGDIOBJ op = SelectObject(dc, pen);
+        HGDIOBJ ob = SelectObject(dc, filled ? static_cast<HGDIOBJ>(brush) : GetStockObject(NULL_BRUSH));
+        Ellipse(dc, c.x - r, c.y - r, c.x + r + 1, c.y + r + 1);
+        SelectObject(dc, op);
+        SelectObject(dc, ob);
+        DeleteObject(pen);
+        if (brush)
+        {
+          DeleteObject(brush);
+        }
+      };
+      // The lock's face, the current pin's window (Rare's radius), the pins, the pick.
+      circle(POINT{cx, cy}, R, theme::kBorder, RGB(0x0A, 0x16, 0x38), true, ui.px(2));
+      if (!d.done && d.cur < int(d.pins.size()))
+      {
+        const auto &p = d.pins[size_t(d.cur)];
+        circle(at(p.x, p.y), int(d.radius * R), RGB(0x2A, 0x4A, 0x8A), 0, false, 1);
+      }
+      const int pin_r = std::max(3, ui.px(5));
+      for (size_t i = 0; i < d.pins.size(); ++i)
+      {
+        const auto &p = d.pins[i];
+        const bool current = !d.done && int(i) == d.cur;
+        const COLORREF c = p.set ? theme::kCyan : current ? theme::kOrange : theme::kTextDim;
+        circle(at(p.x, p.y), pin_r, c, c, p.set || current, 1);
+        if (current && d.hold < pdz::minigame::kPinHoldSeconds)
+        {
+          // The hold: a ring that closes as the pin sets.
+          const double f = 1.0 - d.hold / pdz::minigame::kPinHoldSeconds;
+          const POINT c0 = at(p.x, p.y);
+          const int rr = pin_r + ui.px(4);
+          HPEN pen = CreatePen(PS_SOLID, std::max(2, ui.px(2)), theme::kCyan);
+          HGDIOBJ op = SelectObject(dc, pen);
+          SetArcDirection(dc, AD_CLOCKWISE);
+          const double a1 = 3.14159265358979323846 / 2 - f * 2 * 3.14159265358979323846;
+          Arc(dc, c0.x - rr, c0.y - rr, c0.x + rr, c0.y + rr, c0.x, c0.y - rr,
+              c0.x + int(std::lround(rr * std::cos(a1))), c0.y - int(std::lround(rr * std::sin(a1))));
+          SelectObject(dc, op);
+          DeleteObject(pen);
+        }
+      }
+      {
+        const POINT tip = at(d.pick.radius * std::cos(d.pick.angle), d.pick.radius * std::sin(d.pick.angle));
+        HPEN pen = CreatePen(PS_SOLID, std::max(2, ui.px(2)), RGB(255, 255, 255));
+        HGDIOBJ op = SelectObject(dc, pen);
+        MoveToEx(dc, cx, cy, nullptr);
+        LineTo(dc, tip.x, tip.y);
+        SelectObject(dc, op);
+        DeleteObject(pen);
+        circle(tip, std::max(2, ui.px(3)), RGB(255, 255, 255), RGB(255, 255, 255), true, 1);
+      }
+      if (d.done)
+      {
+        RECT t{cx - ui.px(44), cy - ui.px(12), cx + ui.px(44), cy + ui.px(12)};
+        theme::FillRound(dc, t, ui.px(5), theme::kBackground, theme::kCyan);
+        theme::Text(dc, L"Unlocked!", t, ui.tf.body_bold, theme::kCyan, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      }
+      else if (d.captured)
+      {
+        RECT t = rc;
+        t.top = rc.bottom - ui.px(20);
+        theme::Text(dc, L"Esc lets go", t, ui.tf.note, theme::kTextDim, DT_CENTER | DT_SINGLELINE);
+      }
+      BitBlt(target, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
+      SelectObject(dc, old_bmp);
+      DeleteObject(bmp);
+      DeleteDC(dc);
+    }
+
+    LRESULT CALLBACK DialProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+    {
+      Ui *ui = g_ui;
+      switch (msg)
+      {
+      case WM_GETDLGCODE:
+        // The arrows and letters while it has the focus (they steer); Tab, Enter and Esc stay the window's, except Esc
+        // while it holds the mouse.
+        return DLGC_WANTARROWS | DLGC_WANTCHARS | (ui && ui->dial.captured ? DLGC_WANTALLKEYS : 0);
+      case WM_ERASEBKGND:
+        return 1;
+      case WM_PAINT:
+      {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        if (ui)
+        {
+          RECT rc;
+          GetClientRect(hwnd, &rc);
+          DialPaint(*ui, dc, rc);
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+      }
+      case WM_LBUTTONDOWN:
+        if (ui)
+        {
+          SetFocus(hwnd);
+          if (ui->dial.captured)
+          {
+            DialRelease(*ui);
+          }
+          else
+          {
+            // Holds the mouse: the pointer hides and stays on the dial; its motion steers (raw counts, as in the game).
+            ui->dial.captured = true;
+            SetCapture(hwnd);
+            RECT r;
+            GetWindowRect(hwnd, &r);
+            ClipCursor(&r);
+            ShowCursor(FALSE);
+            InvalidateRect(hwnd, nullptr, FALSE);
+          }
+        }
+        return 0;
+      case WM_KEYDOWN:
+        if (ui && wp == VK_ESCAPE && ui->dial.captured)
+        {
+          DialRelease(*ui);
+          return 0;
+        }
+        break;
+      case WM_CHAR:
+        return 0; // the letters steer; no beep
+      case WM_SETFOCUS:
+      case WM_KILLFOCUS:
+        if (ui && msg == WM_KILLFOCUS)
+        {
+          DialRelease(*ui);
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      case WM_CAPTURECHANGED:
+        if (ui && ui->dial.captured && reinterpret_cast<HWND>(lp) != hwnd)
+        {
+          ui->dial.captured = false;
+          ClipCursor(nullptr);
+          ShowCursor(TRUE);
+          InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
+      case WM_TIMER:
+        if (ui && IsWindowVisible(hwnd) && !ui->dial.test)
+        {
+          LARGE_INTEGER now, freq;
+          QueryPerformanceCounter(&now);
+          QueryPerformanceFrequency(&freq);
+          const double dt = ui->dial.last.QuadPart
+                                ? std::clamp(double(now.QuadPart - ui->dial.last.QuadPart) / double(freq.QuadPart), 0.0,
+                                             0.05)
+                                : 0.0;
+          ui->dial.last = now;
+          POINT pt;
+          GetCursorPos(&pt);
+          ui->dial.hover = WindowFromPoint(pt) == hwnd && GetForegroundWindow() == ui->window;
+          // Raw mouse counts while it is pointed at or holds the mouse (the key list's capture shares the
+          // registration).
+          const bool want = ui->dial.hover || ui->dial.captured;
+          if (want && !ui->raw_registered)
+          {
+            RawMouse(*ui, true);
+          }
+          else if (!want && ui->raw_registered && ui->cap_row < 0)
+          {
+            RawMouse(*ui, false);
+          }
+          if (!want)
+          {
+            ui->dial.mdx = ui->dial.mdy = 0.0;
+          }
+          DialStep(*ui, dt);
+        }
+        else if (ui)
+        {
+          ui->dial.last.QuadPart = 0;
+        }
+        return 0;
+      default:
+        break;
+      }
+      return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+
+    // pdz_settings_test_dial: one run ("keys", "mouse" or "ignore"), steering like a player would, through DialStep.
+    void DialTestRun(Ui &ui, const std::string &kind, int n, const std::string &capture,
+                     const std::function<void(DWORD)> &pump)
+    {
+      Ui::Dial &d = ui.dial;
+      d.rng.seed(1000u + unsigned(n));
+      d.test = true;
+      // The inputs: Both for the keys and mouse runs; for "ignore", Keys with the mouse moving, then Mouse with keys.
+      // keys_pa / mouse_pa: Perfect Agent on the Mansion intercom door (its part-way pins); the others Secret Agent.
+      SetSel(ui, kLockInputs, 2);
+      const bool pa = kind == "keys_pa" || kind == "mouse_pa";
+      SetSel(ui, kLockDifficulty, pa ? 2 : 1);
+      if (pa)
+      {
+        for (int i = 0; i < kRareLockCount; ++i)
+        {
+          d.force_lock = std::string(kRareLocks[i].name) == "mans_intercomdoor" ? i : d.force_lock;
+        }
+      }
+      DialNewLock(ui);
+      d.radius = kDialRadius[std::clamp(Sel(ui, kLockDifficulty), 0, 2)];
+      std::string pins;
+      for (const auto &p : d.pins)
+      {
+        pins += fmt::format(" ({:+.2f} {:+.2f}: angle {:.0f}, deflection {:.2f})", p.x, p.y,
+                            std::atan2(p.y, p.x) * 180.0 / 3.14159265358979323846, std::hypot(p.x, p.y));
+      }
+      const pdz::minigame::SteerTuning tuning = LockTuning(ui);
+      Note(fmt::format("pdz_settings: test dial: run {} '{}': lock {} = Rare's '{}' with {} pins{}; radius {:.2f}, "
+                       "hold {:.1f} s; mouse {:.0f} counts, key turn {:.2f} s, slow {:.2f}",
+                       n, kind, d.locks, d.lock >= 0 ? kRareLocks[d.lock].name : "?", d.pins.size(), pins, d.radius,
+                       pdz::minigame::kPinHoldSeconds, tuning.mouse_counts, tuning.key_turn_s, tuning.key_slow));
+      const double dt = 1.0 / 60.0;
+      bool mid_taken = false;
+      if (kind == "ignore")
+      {
+        const auto before = d.pick;
+        SetSel(ui, kLockInputs, 1); // Keys: the mouse must not move it
+        for (int i = 0; i < 60; ++i)
+        {
+          d.tkx = d.tky = 0.0;
+          d.tdx = 20.0;
+          d.tdy = -20.0;
+          DialStep(ui, dt);
+        }
+        const bool mouse_ignored = d.pick.radius == before.radius && d.pick.angle == before.angle;
+        SetSel(ui, kLockInputs, 0); // Mouse: the keys must not move it
+        for (int i = 0; i < 60; ++i)
+        {
+          d.tdx = d.tdy = 0.0;
+          d.tkx = 1.0;
+          d.tky = 1.0;
+          DialStep(ui, dt);
+        }
+        const bool keys_ignored = d.pick.radius == before.radius && d.pick.angle == before.angle;
+        Note(fmt::format("pdz_settings: test dial: run {} 'ignore': Keys chosen, mouse moved 1 s: pick {}; Mouse "
+                         "chosen, keys held 1 s: pick {}",
+                         n, mouse_ignored ? "unmoved (PASS)" : "MOVED (FAIL)",
+                         keys_ignored ? "unmoved (PASS)" : "MOVED (FAIL)"));
+        SetSel(ui, kLockInputs, 2);
+      }
+      else
+      {
+        for (int step = 0; step < 60 * 30 && !d.done; ++step)
+        {
+          const auto &pin = d.pins[size_t(d.cur)];
+          const double x = d.pick.radius * std::cos(d.pick.angle), y = d.pick.radius * std::sin(d.pick.angle);
+          d.tkx = d.tky = d.tdx = d.tdy = 0.0;
+          d.tslow = false;
+          if (kind == "keys" || kind == "keys_pa")
+          {
+            // Like a player: turn towards the pin's angle (left / right), then push in or out to its depth, then hold.
+            const double target_a = std::atan2(pin.y, pin.x), target_r = std::hypot(pin.x, pin.y);
+            double da = std::remainder(target_a - d.pick.angle, 2.0 * 3.14159265358979323846);
+            if (std::fabs(da) > 0.04)
+            {
+              d.tkx = da > 0 ? -1.0 : 1.0; // right turns clockwise
+              d.tslow = std::fabs(da) < 0.25;
+            }
+            else if (std::fabs(target_r - d.pick.radius) > 0.03)
+            {
+              d.tky = target_r > d.pick.radius ? 1.0 : -1.0;
+              d.tslow = std::fabs(target_r - d.pick.radius) < 0.12;
+            }
+          }
+          else
+          {
+            // The mouse: counts towards the pin (down = positive y), at most 12 counts a step (720 a second).
+            const double ex = pin.x - x, ey = pin.y - y;
+            if (std::hypot(ex, ey) > 0.04)
+            {
+              d.tdx = std::clamp(ex * tuning.mouse_counts, -12.0, 12.0);
+              d.tdy = std::clamp(-ey * tuning.mouse_counts, -12.0, 12.0);
+            }
+          }
+          DialStep(ui, dt);
+          if (step % 6 == 0)
+          {
+            pump(1);
+          }
+          // A picture mid-lock: the first pin set, the next one half held.
+          if (!mid_taken && d.cur == 1 && !d.done && d.hold < 0.5 && !capture.empty())
+          {
+            mid_taken = true;
+            InvalidateRect(d.wnd, nullptr, FALSE);
+            pump(200);
+            theme::CaptureWindow(ui.window,
+                                 (fs::u8path(capture) / fmt::format("dial_{}_{}_mid.bmp", n, kind)).wstring());
+            Note(fmt::format("pdz_settings: test dial: run {} '{}': mid-lock picture (pin 1 set, pin 2 held {:.2f} s "
+                             "of {:.1f})",
+                             n, kind, pdz::minigame::kPinHoldSeconds - d.hold, pdz::minigame::kPinHoldSeconds));
+          }
+        }
+        if (!d.done)
+        {
+          Note(fmt::format("pdz_settings: test dial: run {} '{}': NOT unlocked after 30 s ({} of {} pins set)", n,
+                           kind, d.cur, d.pins.size()));
+        }
+      }
+      d.tkx = d.tky = d.tdx = d.tdy = 0.0;
+      InvalidateRect(d.wnd, nullptr, FALSE);
+      pump(400);
+      if (!capture.empty())
+      {
+        theme::CaptureWindow(ui.window, (fs::u8path(capture) / fmt::format("dial_{}_{}.bmp", n, kind)).wstring());
+      }
+      d.test = false;
+      SetSel(ui, kLockDifficulty, 1);
     }
 
     void OnCommand(Ui &ui, int id, int code)
@@ -1531,7 +2353,7 @@ namespace pdz::settings_ui
       {
         // The chosen one's help (Off: the tearing warning) goes on the help line at once.
         const int sel = std::clamp(Sel(ui, kVsync), 0, 2);
-        SetWindowTextW(ui.help, kVsyncHelp[sel]);
+        SetHelp(ui, std::wstring(kVsyncHelp[sel]));
         return;
       }
       if (id == kMonitor && code == CBN_SELCHANGE)
@@ -1598,6 +2420,20 @@ namespace pdz::settings_ui
         SetWindowTextW(GetDlgItem(ui.window, kSensitivity), L"2.00");
         SetChecked(ui, kInvert, false);
         SetChecked(ui, kZoomSteps, false);
+        SetSel(ui, kLockInputs, 2);
+        SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_SETPOS, TRUE, LockPosOfCounts(400.0));
+        break;
+      case kLockNewLock:
+        DialNewLock(ui);
+        SetFocus(ui.dial.wnd);
+        break;
+      case kLockDifficulty:
+        if (code == CBN_SELCHANGE)
+        {
+          ui.dial.hold = pdz::minigame::kPinHoldSeconds;
+          ui.dial.radius = kDialRadius[std::clamp(Sel(ui, kLockDifficulty), 0, 2)];
+          InvalidateRect(ui.dial.wnd, nullptr, FALSE);
+        }
         break;
       case kOpenLogs:
       {
@@ -1870,6 +2706,24 @@ namespace pdz::settings_ui
           const DRAWITEMSTRUCT *di = reinterpret_cast<const DRAWITEMSTRUCT *>(lp);
           const int id = int(di->CtlID);
           HWND b = di->hwndItem;
+          if (di->CtlType == ODT_STATIC && id == kHelp)
+          {
+            // The help strip's text: up to two lines (longer text is cut at the second), centred on the info icon.
+            wchar_t help_text[1024] = {};
+            GetWindowTextW(b, help_text, 1024);
+            theme::FillRect(di->hDC, di->rcItem, theme::kSideBar);
+            RECT need = di->rcItem;
+            HGDIOBJ of = SelectObject(di->hDC, ui->tf.note);
+            DrawTextW(di->hDC, help_text, -1, &need, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+            SelectObject(di->hDC, of);
+            RECT t = di->rcItem;
+            const int h = std::min<int>(need.bottom - need.top, t.bottom - t.top);
+            t.top += ((t.bottom - t.top) - h) / 2;
+            t.bottom = t.top + h;
+            theme::Text(di->hDC, help_text, t, ui->tf.note, RGB(0xC9, 0xD3, 0xE6),
+                        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+            return TRUE;
+          }
           wchar_t text[256] = {};
           GetWindowTextW(b, text, 256);
           const bool hot = theme::IsHot(b), pressed = (di->itemState & ODS_SELECTED) != 0,
@@ -1946,7 +2800,7 @@ namespace pdz::settings_ui
       case WM_NOTIFY:
       {
         const NMHDR *nm = reinterpret_cast<NMHDR *>(lp);
-        if (ui && nm->code == NM_CUSTOMDRAW && nm->idFrom == kFov)
+        if (ui && nm->code == NM_CUSTOMDRAW && (nm->idFrom == kFov || nm->idFrom == kLockSens))
         {
           // The field of view slider in the theme: a panel channel, a blue thumb with a cyan edge, no ticks.
           NMCUSTOMDRAW *cd = reinterpret_cast<NMCUSTOMDRAW *>(lp);
@@ -2028,6 +2882,18 @@ namespace pdz::settings_ui
         return 0;
       }
       case WM_INPUT:
+        if (ui && ui->cap_row < 0 && (ui->dial.hover || ui->dial.captured))
+        {
+          RAWINPUT raw{};
+          UINT size = sizeof(raw);
+          if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) !=
+                  UINT(-1) &&
+              raw.header.dwType == RIM_TYPEMOUSE && (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) == 0)
+          {
+            ui->dial.mdx += raw.data.mouse.lLastX;
+            ui->dial.mdy += raw.data.mouse.lLastY;
+          }
+        }
         if (ui && ui->cap_row >= 0)
         {
           RAWINPUT raw{};
@@ -2124,9 +2990,9 @@ namespace pdz::settings_ui
             shown_row = row;
             const std::wstring text =
                 row >= 0 && row < kBindRowCount
-                    ? std::wstring(kBindRows[row].help) + L" Click Key 1 or Key 2, or press Enter, to change it."
+                    ? std::wstring(kBindRows[row].help) + L" Click Key 1 or Key 2 (or press Enter) to change it."
                     : std::wstring(key ? it->second : ui->tab_help[ui->tab]);
-            SetWindowTextW(ui->help, text.c_str());
+            SetHelp(*ui, text);
           }
         }
         return 0;
@@ -2157,9 +3023,14 @@ namespace pdz::settings_ui
         {
           text = theme::kCyan;
         }
-        else if (id == kMultiplayerNote || (id >= kPackMaps0 && id < kPackMaps0 + 10) || id == kWindowedNote)
+        else if (id == kMultiplayerNote || id == kSplitCapNote || (id >= kPackMaps0 && id < kPackMaps0 + 10) ||
+                 id == kWindowedNote)
         {
           text = theme::kTextDim;
+        }
+        else if (id == kBindWarning)
+        {
+          text = theme::kOrange; // the Controls tab's warning (Start without a menu key)
         }
         else if (strip)
         {
@@ -2189,6 +3060,172 @@ namespace pdz::settings_ui
       default:
         return DefWindowProcW(hwnd, msg, wp, lp);
       }
+    }
+
+    // The capture test's layout check (every DPI it runs at): text that doesn't fit its control, controls that run into
+    // the help strip, off the window or into each other, help lines longer than the strip's two lines. One line per
+    // problem, then a count ("layout check: 0 problems" = nothing clipped or overlapping).
+    void CheckLayout(Ui &ui)
+    {
+      int problems = 0;
+      auto narrow = [](const std::wstring &w)
+      {
+        std::string out;
+        for (wchar_t c : w)
+        {
+          out += c < 128 ? char(c) : '?';
+        }
+        return out.size() > 70 ? out.substr(0, 70) + "..." : out;
+      };
+      HDC dc = GetDC(ui.window);
+      auto text_height = [&](const std::wstring &text, HFONT font, int width, UINT extra)
+      {
+        RECT r{0, 0, width, 0};
+        HGDIOBJ of = SelectObject(dc, font);
+        DrawTextW(dc, text.c_str(), -1, &r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT | extra);
+        SelectObject(dc, of);
+        return int(r.bottom);
+      };
+      auto text_width = [&](const std::wstring &text, HFONT font)
+      {
+        RECT r{0, 0, 0, 0};
+        HGDIOBJ of = SelectObject(dc, font);
+        DrawTextW(dc, text.c_str(), -1, &r, DT_LEFT | DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+        SelectObject(dc, of);
+        return int(r.right);
+      };
+      RECT client;
+      GetClientRect(ui.window, &client);
+      const int strip_top = client.bottom - ui.px(kFooterH) - ui.px(kHelpH);
+      auto rect_of = [&](HWND c)
+      {
+        RECT r;
+        GetWindowRect(c, &r);
+        MapWindowPoints(nullptr, ui.window, reinterpret_cast<POINT *>(&r), 2);
+        return r;
+      };
+      for (int t = 0; t < kTabCount; ++t)
+      {
+        std::vector<std::pair<HWND, RECT>> rects;
+        for (HWND c : ui.page[t])
+        {
+          if (c == ui.list_scroll)
+          {
+            continue;
+          }
+          const RECT r = rect_of(c);
+          wchar_t cls[32] = {}, text[512] = {};
+          GetClassNameW(c, cls, 32);
+          GetWindowTextW(c, text, 512);
+          const int w = r.right - r.left, h = r.bottom - r.top;
+          if (r.bottom > strip_top)
+          {
+            Note(fmt::format("pdz_settings: layout check: tab {} '{}' runs into the help strip ({} px)", t,
+                             narrow(text), r.bottom - strip_top));
+            ++problems;
+          }
+          if (r.right > client.right - ui.px(8))
+          {
+            Note(fmt::format("pdz_settings: layout check: tab {} '{}' runs off the right edge", t, narrow(text)));
+            ++problems;
+          }
+          const HFONT font = reinterpret_cast<HFONT>(SendMessageW(c, WM_GETFONT, 0, 0));
+          if (_wcsicmp(cls, L"Static") == 0 && text[0])
+          {
+            const int need = text_height(text, font ? font : ui.font, w,
+                                         (GetWindowLongW(c, GWL_STYLE) & SS_NOPREFIX) ? DT_NOPREFIX : 0);
+            if (need > h)
+            {
+              Note(fmt::format("pdz_settings: layout check: tab {} text '{}' needs {} px, has {}", t, narrow(text), need,
+                               h));
+              ++problems;
+            }
+          }
+          if (_wcsicmp(cls, L"Button") == 0 && text[0])
+          {
+            const bool toggle = ui.toggles.count(GetDlgCtrlID(c)) != 0;
+            const int room = toggle ? w - ui.px(2 + 40 + 12) : w - ui.px(16);
+            const int need = text_width(text, toggle ? ui.tf.body : ui.tf.body_bold);
+            if (need > room)
+            {
+              Note(fmt::format("pdz_settings: layout check: tab {} button '{}' needs {} px, has {}", t, narrow(text),
+                               need, room));
+              ++problems;
+            }
+          }
+          rects.push_back({c, r});
+        }
+        for (size_t i = 0; i < rects.size(); ++i)
+        {
+          for (size_t j = i + 1; j < rects.size(); ++j)
+          {
+            RECT a = rects[i].second, b = rects[j].second, x{};
+            InflateRect(&a, -ui.px(2), -ui.px(2));
+            InflateRect(&b, -ui.px(2), -ui.px(2));
+            if (IntersectRect(&x, &a, &b))
+            {
+              wchar_t ta[128] = {}, tb[128] = {};
+              GetWindowTextW(rects[i].first, ta, 128);
+              GetWindowTextW(rects[j].first, tb, 128);
+              Note(fmt::format("pdz_settings: layout check: tab {} '{}' overlaps '{}' (ids {} / {})", t, narrow(ta),
+                               narrow(tb), GetDlgCtrlID(rects[i].first), GetDlgCtrlID(rects[j].first)));
+              ++problems;
+            }
+          }
+        }
+      }
+      // The footer's controls inside the window.
+      for (int id : {kDontShow, kSafe, kPlay})
+      {
+        HWND c = GetDlgItem(ui.window, id);
+        wchar_t text[256] = {};
+        GetWindowTextW(c, text, 256);
+        const RECT r = rect_of(c);
+        const bool toggle = ui.toggles.count(id) != 0;
+        const int room = toggle ? (r.right - r.left) - ui.px(2 + 40 + 12) : (r.right - r.left) - ui.px(16);
+        const int need = text_width(text, toggle ? ui.tf.body : ui.tf.button);
+        if (r.left < 0 || r.right > client.right || need > room)
+        {
+          Note(fmt::format("pdz_settings: layout check: footer '{}' doesn't fit ({} px of text, {} of room, left {})",
+                           narrow(text), need, room, r.left));
+          ++problems;
+        }
+      }
+      // Help lines: two at most on the strip.
+      RECT hr;
+      GetClientRect(ui.help, &hr);
+      const int line = text_height(L"Ag", ui.tf.note, hr.right, DT_NOPREFIX);
+      std::set<std::wstring> helps;
+      for (const auto &kv : ui.help_of)
+      {
+        helps.insert(kv.second);
+      }
+      for (int t = 0; t < kTabCount; ++t)
+      {
+        helps.insert(ui.tab_help[t]);
+      }
+      for (int r = 0; r < kBindRowCount; ++r)
+      {
+        helps.insert(std::wstring(kBindRows[r].help) + L" Click Key 1 or Key 2 (or press Enter) to change it.");
+      }
+      for (const wchar_t *v : kVsyncHelp)
+      {
+        helps.insert(v);
+      }
+      helps.insert(kWaiting);
+      for (const std::wstring &h : helps)
+      {
+        const int need = text_height(h, ui.tf.note, hr.right, DT_NOPREFIX);
+        if (need > 2 * line || need > hr.bottom)
+        {
+          Note(fmt::format("pdz_settings: layout check: help line '{}' is {} lines (two at most)", narrow(h),
+                           (need + line - 1) / line));
+          ++problems;
+        }
+      }
+      ReleaseDC(ui.window, dc);
+      Note(fmt::format("pdz_settings: layout check at {} dpi: {} help lines, {} problem(s)", ui.dpi, helps.size(),
+                       problems));
     }
 
     // The common controls' current look for this window only (a comctl32 v6 manifest in the exe's resources, id 3,
@@ -2368,7 +3405,7 @@ namespace pdz::settings_ui
                             ? kFovMinDegrees
                             : FovPositionOfScale(std::atof(rex::cvar::GetFlagByName("pdz_fov_scale").c_str()));
         SendMessageW(fov, TBM_SETPOS, TRUE, pos);
-        Add(ui, kTabDisplay, L"STATIC", FovText(pos), SS_LEFT, cx + 206, 278, 130, 18, kFovValue, help);
+        Add(ui, kTabDisplay, L"STATIC", FovText(pos), SS_LEFT, cx + 206, 278, 130, 22, kFovValue, help);
         Button(ui, kTabDisplay, L"Default (Rare's)", cx + 240, 302, 140, kFovDefault,
                L"Back to Rare's 73\u00B0.");
       }
@@ -2385,8 +3422,19 @@ namespace pdz::settings_ui
       Label(ui, kTabFrameRate, L"Multiplayer", x, 142, lw, true);
       Segments(ui, kTabFrameRate, cx, 138, 90, kMultiplayer, {L"60 fps"}, 0,
                L"Multiplayer always runs at 60 fps. The game's timing and bots were built for it.", true);
-      Add(ui, kTabFrameRate, L"STATIC", L"Locked at 60.", SS_LEFT, cx + 104, 142, 220, 18,
+      Add(ui, kTabFrameRate, L"STATIC", L"Locked at 60.", SS_LEFT, cx + 104, 142, 220, 22,
           kMultiplayerNote);
+      // Split screen (pdz_splitscreen_cap, 2026-11-08): the frame rate while 2 or more players share the screen.
+      Label(ui, kTabFrameRate, L"Split screen", x, 200, lw, true);
+      const std::string split_cap = rex::cvar::GetFlagByName("pdz_splitscreen_cap");
+      const int split_sel = split_cap == "60" ? 1 : split_cap == "40" ? 2 : split_cap == "30" ? 3 : 0;
+      Segments(ui, kTabFrameRate, cx, 196, 90, kSplitCap, {L"Auto", L"60 fps", L"40 fps", L"30 fps"}, split_sel,
+               L"The frame rate while two or more of you share the screen, in co-op or multiplayer. With three or "
+               L"four players a steady 40 or 30 is smoother than dropped frames.");
+      Add(ui, kTabFrameRate, L"STATIC",
+          L"Only while 2 or more players share the screen, in the level. Auto: 60 fps with 2 players, 40 fps with 3 "
+          L"or 4 on a 120 Hz screen.",
+          SS_LEFT, cx, 230, cw + 40, 44, kSplitCapNote);
       ui.tab_help[kTabFrameRate] = L"Point at a setting to see what it does.";
 
       // Map packs.
@@ -2399,7 +3447,7 @@ namespace pdz::settings_ui
       {
         const int y = 94 + int(i) * 64;
         Label(ui, kTabPacks, W(map_packs::Packs()[i].name), x, y, 200, true);
-        Add(ui, kTabPacks, L"STATIC", W(map_packs::Packs()[i].maps), SS_LEFT, x, y + 20, 300, 18, kPackMaps0 + int(i));
+        Add(ui, kTabPacks, L"STATIC", W(map_packs::Packs()[i].maps), SS_LEFT, x, y + 20, 300, 22, kPackMaps0 + int(i));
         Add(ui, kTabPacks, L"STATIC", L"", SS_LEFT, 340, y, 200, 36, kPackStatus0 + int(i),
             L"Installed (repaired): your copy had a known fault, and it's been fixed. Not installed: its maps won't "
             L"show up in multiplayer.");
@@ -2407,9 +3455,8 @@ namespace pdz::settings_ui
                L"Add: pick the pack's file. Remove: takes it out of PDZ Restored only. Your own copy isn't touched.");
       }
       Button(ui, kTabPacks, L"Add pack files...", x, 236, 160, kPackAddFiles,
-             L"Pick the map pack files you copied from your Xbox 360. They're in "
-             L"Content\\0000000000000000\\4D5307D3\\00000002 on the console's drive. They're checked, and fixed if "
-             L"needed, before they're installed.");
+             L"Pick the pack files you copied from your Xbox 360: Content\\0000000000000000\\4D5307D3\\00000002 "
+             L"on its drive. They're checked, and fixed if needed.");
       Button(ui, kTabPacks, L"Check installed packs", x + 170, 236, 180, kPackCheck,
              L"Checks the installed packs again, for example after you've moved the game folder.");
       ui.tab_help[kTabPacks] =
@@ -2428,12 +3475,12 @@ namespace pdz::settings_ui
           ES_LEFT | WS_BORDER | WS_TABSTOP, 160, 48, 70, 24, kSensitivity,
           L"How fast the view turns when you move the mouse. 2.0 is the default. Aiming down a scope is slower to "
           L"match.");
-      Button(ui, kTabControls, L"Invert up / down", 260, 46, 200, kInvert, L"Mouse up looks down.", BS_AUTOCHECKBOX);
+      Button(ui, kTabControls, L"Invert up / down", 260, 46, 176, kInvert, L"Mouse up looks down.", BS_AUTOCHECKBOX);
       if (rex::cvar::GetFlagByName("pdz_mouse_invert") == "true")
       {
         SetChecked(ui, kInvert, true);
       }
-      Button(ui, kTabControls, L"Step zoom", x, 76, 600, kZoomSteps,
+      Button(ui, kTabControls, L"Step zoom", 452, 46, 180, kZoomSteps,
              L"Aiming zooms to your gun's first zoom level. While aiming, click R3 or roll the mouse wheel to zoom in "
              L"further. Guns with one zoom level work as normal. Off: zoom works the way Rare made it.",
              BS_AUTOCHECKBOX);
@@ -2442,10 +3489,11 @@ namespace pdz::settings_ui
         SetChecked(ui, kZoomSteps, true);
       }
       ui.list = Add(ui, kTabControls, WC_LISTVIEWW, L"",
-                    LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, x, 108,
-                    604, 232, kBindList, L"");
-      ui.help_of[ui.list] = L"Click Key 1 or Key 2 on an action, then press the key, mouse button or wheel direction "
-                            L"you want.";
+                    LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, x, 84,
+                    604, 146, kBindList, L"");
+      const wchar_t *const list_help = L"Click Key 1 or Key 2, then press the key or mouse button you want. In menus, "
+                                       L"Enter or left click selects, and Esc or right click goes back.";
+      ui.help_of[ui.list] = list_help;
       SendMessageW(ui.list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
                    LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
       SetWindowTheme(ui.list, L"DarkMode_Explorer", nullptr);
@@ -2503,16 +3551,65 @@ namespace pdz::settings_ui
         sel.stateMask = sel.state = LVIS_SELECTED | LVIS_FOCUSED;
         SendMessageW(ui.list, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&sel));
       }
-      Button(ui, kTabControls, L"Change key 1", x, 348, 120, kBindChange1,
+      Button(ui, kTabControls, L"Change key 1", x, 238, 120, kBindChange1,
              L"Change this action's first key.");
-      Button(ui, kTabControls, L"Change key 2", x + 128, 348, 120, kBindChange2,
+      Button(ui, kTabControls, L"Change key 2", x + 128, 238, 120, kBindChange2,
              L"Change this action's second key.");
-      Button(ui, kTabControls, L"Clear", x + 256, 348, 80, kBindClear, L"Removes both keys from this action.");
-      Button(ui, kTabControls, L"Reset controls to defaults", x + 404, 348, 200, kBindReset,
-             L"Puts all keys, mouse sensitivity, invert and step zoom back to their defaults.");
-      ui.tab_help[kTabControls] =
-          L"Click Key 1 or Key 2 on an action, then press the key, mouse button or wheel direction you want. In menus, "
-          L"Enter or left click selects and Esc or right click goes back, whatever you set here.";
+      Button(ui, kTabControls, L"Clear", x + 256, 238, 80, kBindClear, L"Removes both keys from this action.");
+      Button(ui, kTabControls, L"Reset controls to defaults", x + 404, 238, 200, kBindReset,
+             L"Puts all keys, mouse sensitivity, invert, step zoom and the Locktopus settings back to their "
+             L"defaults.");
+      // The warning line under the buttons (orange, WM_CTLCOLORSTATIC): Start without a key the menus leave alone.
+      // Empty when there is nothing to say; UpdateStartWarning sets it with every change of the rows. Two lines.
+      Add(ui, kTabControls, L"STATIC", L"", SS_LEFT, x, 274, 604, 40, kBindWarning);
+      ui.tab_help[kTabControls] = list_help;
+
+      // Locktopus (the lock-pick gadget): its own group under the keys, with a practice dial on the right.
+      {
+        const int gy = 318, lx = 150;
+        HWND heading = Add(ui, kTabControls, L"STATIC", L"LOCKTOPUS", SS_LEFT, x, gy, 200, 22, kLockHeading);
+        SendMessageW(heading, WM_SETFONT, reinterpret_cast<WPARAM>(ui.bold), TRUE);
+        Add(ui, kTabControls, L"STATIC", L"Steer with", SS_LEFT, x, gy + 28, 116, 22, kLockInputsLabel);
+        Segments(ui, kTabControls, lx, gy + 24, 72, kLockInputs, {L"Mouse", L"Keys", L"Both"},
+                 LockSelOfInputs(pdz::minigame::PickInputsFromName(REXCVAR_GET(pdz_minigame_inputs))),
+                 L"What steers the pick: the mouse, the keys, or both together. A controller always works.");
+        const std::wstring sens_help =
+            L"How far the pick moves for a mouse movement. High: a small movement moves it further.";
+        Add(ui, kTabControls, L"STATIC", L"Mouse sensitivity", SS_LEFT, x, gy + 68, 120, 22, kLockSensLabel,
+            sens_help);
+        Add(ui, kTabControls, L"STATIC", L"Low", SS_LEFT, lx, gy + 68, 32, 22, kLockLow, sens_help);
+        HWND sens = Add(ui, kTabControls, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, lx + 32, gy + 62,
+                        180, 30, kLockSens, sens_help);
+        SendMessageW(sens, TBM_SETRANGE, FALSE, MAKELPARAM(0, kLockSensMax));
+        SendMessageW(sens, TBM_SETPAGESIZE, 0, 2);
+        SendMessageW(sens, TBM_SETPOS, TRUE, LockPosOfCounts(REXCVAR_GET(pdz_minigame_mouse_counts)));
+        Add(ui, kTabControls, L"STATIC", L"High", SS_LEFT, lx + 216, gy + 68, 40, 22, kLockHigh, sens_help);
+        HWND keys = Add(ui, kTabControls, L"STATIC", L"", SS_LEFT | SS_NOPREFIX, x, gy + 98, 376, 40, kLockKeys);
+        SendMessageW(keys, WM_SETFONT, reinterpret_cast<WPARAM>(ui.tf.note), TRUE);
+        static bool dial_class = false;
+        if (!dial_class)
+        {
+          WNDCLASSW wc{};
+          wc.lpfnWndProc = DialProc;
+          wc.hInstance = GetModuleHandleW(nullptr);
+          wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+          wc.lpszClassName = L"PDZRestoredLockDial";
+          dial_class = RegisterClassW(&wc) != 0;
+        }
+        ui.dial.wnd = Add(ui, kTabControls, L"PDZRestoredLockDial", L"", WS_TABSTOP, 412, gy - 2, 220, 92, kLockDial,
+                          L"Practice lock: point at it to steer with the mouse, or click it to keep the mouse there "
+                          L"(click or Esc lets go). Click it first to use the keys.");
+        SetTimer(ui.dial.wnd, 1, 15, nullptr);
+        Combo(ui, kTabControls, 412, gy + 98, 132, kLockDifficulty, {L"Agent", L"Secret Agent", L"Perfect Agent"}, 1,
+              L"The practice lock's difficulty: how close the pick has to be to a pin (Rare's distances 0.45, 0.33 and "
+              L"0.20; Dark Agent is as Perfect Agent).");
+        Button(ui, kTabControls, L"New lock", 548, gy + 96, 84, kLockNewLock,
+               L"A new practice lock: the pins of one of Rare's own locks, picked at random.");
+        ui.dial.rng.seed(GetTickCount());
+        DialNewLock(ui);
+      }
+      UpdateStartWarning(ui);
+      RefreshLockText(ui);
 
       // Advanced.
       Button(ui, kTabAdvanced, L"Open settings file", x, 52, 200, kOpenSettings,
@@ -2535,11 +3632,11 @@ namespace pdz::settings_ui
 
       // Bottom: help line, don't show, buttons.
       // The help strip along the bottom of the content area (its info icon is painted), then the footer.
-      ui.help = Add(ui, -1, L"STATIC", L"", SS_LEFT, kSideW + 60, kWindowH - kFooterH - kHelpH + 8,
-                    kWindowW - kSideW - 60 - 24, kHelpH - 12, kHelp);
+      ui.help = Add(ui, -1, L"STATIC", L"", SS_OWNERDRAW, kSideW + 60, kWindowH - kFooterH - kHelpH + 4,
+                    kWindowW - kSideW - 60 - 24, kHelpH - 8, kHelp);
       SendMessageW(ui.help, WM_SETFONT, reinterpret_cast<WPARAM>(ui.tf.note), TRUE);
-      Button(ui, -1, L"Don't show this again (hold Shift when starting to bring it back)", 20,
-             kWindowH - kFooterH + 22, 460,
+      Button(ui, -1, L"Don't show this again (hold Shift when starting to bring it back)", 24,
+             kWindowH - kFooterH + 22, 500,
              kDontShow, L"", BS_AUTOCHECKBOX);
       HWND safe = Button(ui, -1, L"Safe mode", kWindowW - 24 - 150 - 12 - 130, kWindowH - kFooterH + 16, 130, kSafe,
                          L"Starts with a slower, simpler renderer at 60 fps. Try it if the game won't start or looks "
@@ -2614,6 +3711,24 @@ namespace pdz::settings_ui
             SendMessageW(GetDlgItem(ui.window, id), BM_CLICK, 0, 0);
             Note(fmt::format("pdz_settings: test: clicked control {}: tab now {}, Screen mode {}, Render scale {}", id,
                              ui.tab, Sel(ui, kMode), Sel(ui, kScale)));
+            continue;
+          }
+          if (cvar == "lock_inputs" || cvar == "lock_sens")
+          {
+            // The Locktopus group: lock_inputs=mouse|keys|both clicks that segment, lock_sens=<0..20> moves the slider.
+            if (cvar == "lock_inputs")
+            {
+              const int sel = input == "mouse" ? 0 : input == "keys" ? 1 : 2;
+              SendMessageW(GetDlgItem(ui.window, 2000 + kLockInputs * 8 + sel), BM_CLICK, 0, 0);
+            }
+            else
+            {
+              SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_SETPOS, TRUE, std::atoi(input.c_str()));
+            }
+            Note(fmt::format("pdz_settings: test: Locktopus: steer with {}, sensitivity position {} ({:.0f} counts)",
+                             pdz::minigame::PickInputsName(LockInputsOfSel(Sel(ui, kLockInputs))),
+                             int(SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_GETPOS, 0, 0)),
+                             LockCountsOfPos(int(SendMessageW(GetDlgItem(ui.window, kLockSens), TBM_GETPOS, 0, 0)))));
             continue;
           }
           if (cvar == "pdz_fov_degrees")
@@ -2732,12 +3847,43 @@ namespace pdz::settings_ui
           PostMessageW(ui.window, WM_COMMAND, MAKEWPARAM(kPlay, BN_CLICKED), 0);
         }
       }
+      // pdz_settings_test_dial: the practice dial played by its own test steering (logged), each run captured.
+      const std::string dial_test = REXCVAR_GET(pdz_settings_test_dial);
+      if (!dial_test.empty())
+      {
+        ui.testing = true;
+        ShowTab(ui, kTabControls);
+        auto pump = [&](DWORD ms)
+        {
+          for (const DWORD until = GetTickCount() + ms; GetTickCount() < until && !ui.done;)
+          {
+            MSG m;
+            while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE))
+            {
+              TranslateMessage(&m);
+              DispatchMessageW(&m);
+            }
+            Sleep(5);
+          }
+        };
+        pump(300);
+        std::stringstream runs(dial_test);
+        std::string run;
+        int n = 0;
+        while (std::getline(runs, run, ';'))
+        {
+          DialTestRun(ui, run, ++n, REXCVAR_GET(pdz_settings_test_capture), pump);
+        }
+        DialNewLock(ui);
+        ui.testing = !REXCVAR_GET(pdz_settings_test_rebind).empty();
+      }
       // pdz_settings_test_capture: every tab to a .bmp, then close.
       const std::string capture = REXCVAR_GET(pdz_settings_test_capture);
       if (!capture.empty())
       {
         std::error_code ec;
         fs::create_directories(fs::u8path(capture), ec);
+        CheckLayout(ui);
         for (int t = 0; t < kTabCount; ++t)
         {
           ShowTab(ui, t);
@@ -2827,6 +3973,11 @@ namespace pdz::settings_ui
         }
       }
       RawMouse(ui, false);
+      if (!capture.empty())
+      {
+        std::ofstream lines(fs::u8path(capture) / "settings_test.txt", std::ios::binary | std::ios::trunc);
+        lines << g_summary << "\n";
+      }
       theme::FreeFonts(ui.tf);
       g_ui = nullptr;
       UnregisterClassW(wc.lpszClassName, wc.hInstance);

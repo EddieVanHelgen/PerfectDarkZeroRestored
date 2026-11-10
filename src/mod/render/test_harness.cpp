@@ -81,6 +81,7 @@
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 
+#include "../mnk_layout.h"
 #include "shadow_record.h"
 
 // Log 101 (split screen: player 2's pad connected, but he never became a participant): the join, its sign-in
@@ -618,11 +619,21 @@ namespace
   }
 } // namespace
 
+void PdzAutopilotPad(uint8_t *base, uint32_t user, uint32_t state); // unarmed_log.cpp
+
 REX_HOOK_RAW(sub_82AD4A18)
 {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
   __imp__sub_82AD4A18(ctx, base);
   ApplyPadScript(ctx, base, user, state);
+  if (ctx.r3.u32 == 0)
+  {
+    PdzAutopilotPad(base, user, state); // unarmed_log.cpp: pdz_test_autopilot's left stick (testing tool)
+  }
+  if (ctx.r3.u32 == 0)
+  {
+    pdz::mnk_layout::OnPadState(base, user, state); // mnk_layout.h: the keys follow the in-game controller layout
+  }
   if (ctx.r3.u32 == 0 && pdz::shadow::IsGuestPointer(state))
   {
     pdz::zoom::OnPadButtons(user, pdz::test::Load16BE(base, state + 4)); // zoom_steps.cpp: R3 for step zoom

@@ -154,6 +154,10 @@ namespace
     {
       text += ", zoomed assist";
     }
+    if (REXCVAR_GET(pdz_autoaim_zoom_falloff))
+    {
+      text += fmt::format(", zoom falloff {:g}", REXCVAR_GET(pdz_autoaim_zoom_radius));
+    }
     return text;
   }
 

@@ -56,6 +56,32 @@ driver), the mouse aims directly. Settings: `settings/mapping.toml`.
   filter output up to +-32767; the SDK's own stick 0 all along). The CamSpy's yaw moved +105.9, -332.8, +85.2 and
   +265.2 deg in one-second steps, and its pitch up to +-16. No numpad key was pressed. After the CamSpy, mouse aim on
   foot came back (yaw 57.7 -> 144.3 in two seconds).
+- **Mounted turrets: the mouse aims directly (`pdz_mouse_direct_steer`, on; 2026-11-08).** As the right stick the
+  mouse turned a turret no faster than the stick's top turn rate (Bridge's opening turret felt sluggish). Now a
+  mounted turret's own aim takes the mouse counts as an angle, the same way the view does on foot:
+  `pdz_mouse_sensitivity` x 0.022 deg per count (0.044 by default), at any frame rate, no stick curve or turn cap.
+  - The turret (`sub_8258CEA0`, vtable `820C5BE0`) keeps its aim at +928 (yaw) and +924 (pitch) in radians. Just
+    before its look update (8258DEC0..8258DF20) it rewrites both in degrees through its vtable +24 / +32 and +28 / +36
+    (getters `8258BA10` / `8258BA18`, setters `8258BA20` / `8258BA28`, adders `8258BA30` / `8258BA40`, none with a
+    limit). The look update (`sub_825B3AC0`: the turret's user as the owner, the turret as the view, the look state at
+    +936) turns them from the stick and clamps the pitch to the look tuning's limit (float +64, as on foot). After it
+    (8258DF54..8258DFEC) the turret takes both back to radians, wraps them (`sub_82703490`) and clamps the pitch to
+    its own limits (the floats at `82D35BE4` / `82D35BE8`; past them the doubles at `820EC708` / `820EC710`). The yaw
+    has no limit.
+  - The mouse turn goes in between the two (`mouse_look.h` `AfterSteeredLook`, from `look_tuning.cpp`'s look hook
+    right after Rare's look update returns): the look update's pitch limit as on foot, and Rare's own turret clamp
+    right after it. The fields are found through the view's own vtable (+24 / +28 must be `lfs f1,D(r3); blr` and
+    +32 / +36 `stfs f1,D(r3); blr` with the same D), otherwise the mouse stays the right stick.
+  - Meanwhile the mouse gives the pad filter no stick (`SteerStickForPad`) and `pdz_mouse_invert` no longer flips
+    pad 0's right stick there, so a controller is the same with the switch on or off.
+  - 0.9.3's check before the "+6560" read (`NoteSteeredLook`) is unchanged. On foot, the mouse aim's own player check
+    (`OurView`) no longer reads the owner's +6560 when the owner isn't the view (the hovercraft and the jetpack pass
+    the vehicle as the owner).
+  - The CamSpy, the guided rocket, the hovercraft and the jetpack keep the mouse as the right stick (not script
+    testable; the vehicles turn the player's own view with the vehicle as the owner, a different mechanism).
+  - `pdz_mouse_direct_steer_log` (diagnostic, off): a `pdz_mouse: turret aim` line once a second on a turret (its
+    yaw / pitch, this second's counts, the mouse turn and how far the aim moved, turret updates per second), switch on
+    or off. `pdz_mouse_test_steer` / `_y` feed the direct path too (counts per second of wall clock).
 - **Diagnostics (off by default):** `pdz_mouse_steer_log`. Once a second:
   - each steered look update (owner, view, the view's yaw / pitch through its getters: the CamSpy's at +1380 / +1376);
   - the CamSpy's own update (`sub_8253F7D8`, its control flag +1571);
@@ -104,6 +130,129 @@ driver), the mouse aims directly. Settings: `settings/mapping.toml`.
 
 PDZ has no quick weapon slots: the number keys are the D-pad's gadget slots.
 
+## Controller layouts (`pdz_mnk_follow_layout`, on; `src/mod/mnk_layout.cpp`, 2026-11-08)
+
+The keys above are stick directions, and Rare maps the sticks onto move and look by the player's controller
+options. In **Classic PD** the left stick's x turns and the right stick's x strafes, so without this A / D turned and
+the turn keys strafed. With `pdz_mnk_follow_layout` (default on) each key does what its name says in every layout:
+W / S walk, A / D strafe, the look keys turn and look up / down. A controller is never changed.
+
+**Where the layout lives** (read from the code, TU3): one controller object per local player at participant +1680
+(player +6560 is the participant; the "input block" fields +1680.. of the other mods are this object). Its update
+`sub_822748C8(controller, player, -, aim allowed)` runs once per frame (from `sub_82472E98`):
+
+| Field | Meaning |
+|---|---|
+| +0 | pad index (XInputGetState user) |
+| +4 | Controller Style: 0 = CLASSIC PD, 1 = STANDARD (profile +8808; also picks the look model, "PD" / "Halo") |
+| +8 | context: 0 on foot (player vtable +596 `sub_825AC318`), 2 hovercraft, 4 jetpack, 6 turret; 1, 3, 5 rare |
+| +16 | 0 = Look Inversion on: the look y is negated (`82274BB4`; profile +8816 bit 29) |
+| +24 | 1 = sticks SWAPPED: left and right exchanged before anything else (`82274A64`; profile +8816 bit 31) |
+| +28 / +32, +36 / +40 | outputs: move x (strafe) / y (walk), look x (turn) / y (pitch) |
+| +76 | the aim trigger (LT) for Classic PD's aiming swap (`sub_82275BD8`), when the update's r6 allows it |
+
+The front end's values are "CLASSIC PD | STANDARD" and "NORMAL | SWAPPED" (frontend `default.str`).
+
+| Layout | Strafe | Walk | Turn | Look up / down |
+|---|---|---|---|---|
+| Standard (any context but 5) | left x | left y | right x | right y |
+| Classic PD, on foot, not aiming; hovercraft / jetpack / turret | **right x** | left y | **left x** | right y |
+| Classic PD, on foot, aiming (LT held) | right x | right y | left x | left y |
+| Classic PD context 3; context 5 in either style | right x | right y | left x | left y |
+| Sticks swapped | the same with left and right exchanged | | | |
+
+**How:** in the game's XInputGetState (user 0, where the SDK merges the keyboard), each stick axis the keyboard
+drives is moved to the axis that does the key's job in the active layout. The keyboard's share is found by tracking the
+held keys and evaluating the stick binds exactly as the SDK's driver does (same tokens, modifiers): an axis is moved
+only when the merged value is the keyboard's own (the keyboard won the SDK's merge). The layout comes from the last
+controller update (under 300 ms old; menus, cutscenes and mnk's menu mode are left alone). Aiming in Classic PD is the
+current poll's LT when the update allows the swap.
+
+**The mouse:** on foot it turns the view directly (`mouse_look.cpp`) and never depended on the layout. As a stick
+(CamSpy, turrets, guided rocket, vehicles) it goes, at the pad filter, to the axes that turn and pitch in the layout
+(`RouteForSteering`: the left stick's x in Classic PD), and the game's Look Inversion no longer flips it (mouse up =
+look up, as on foot; `pdz_mouse_invert` still flips it).
+
+**Not handled:** with `pdz_mouse_look` off the SDK's own mouse stick (mnk) is not rerouted. While a key and a
+controller push the same axis, the controller's weaker deflection on that axis is lost until the key is let go.
+
+**Testing tools:** `pdz_mnk_test_layout` (classic / standard, `_swapped`, `_inverted`: forced into pad 0's controller
+before each update), `pdz_mnk_test_keys` (keys held, simulated: their stick merged into pad 0 as the SDK does), and the
+diagnostic `pdz_mnk_layout_log` (the layout and its axes at each change; twice a second while a stick is pushed, which
+axis each key drove and the game's move / look).
+
+## The Locktopus (`pdz_fix_minigame_keyboard`, on; `src/mod/minigame_input.cpp`, 2026-11-09)
+
+A player on the keyboard and mouse could not do the Locktopus: Rare's lock-picking reads **only the left stick**
+(controller +44 / +48 = participant +1724 / +1728), so the look keys and the mouse never reached it, and pins that
+sit at odd angles or part-way out can't be set by keys that snap a stick to eight full-deflection directions.
+
+**Rare's lock (TU3, read from the code; `sub_82648BF0` set-up, `sub_826492E8` update):**
+
+| | |
+|---|---|
+| Lock data | an `aid_xml_subgames_lockbot_<level>_<lock>` asset: four floats (0.3 / 0.2 / 0.15 / 0.15 in every lock, read only as "> 0" flags) and 8 pins of 3 bytes: x, y (signed, over 128 = the stick the pin wants) and a non-zero marker for a pin that exists |
+| Radius | one per lock from the difficulty: Agent 0.45, Secret Agent 0.33, Perfect / Dark Agent 0.20 (subgame +140) |
+| Check | every frame the subgame copies the pad's left stick (no smoothing of its own) and takes dist = \|stick - pin / 128\|; dist < radius = inside |
+| Hold | inside, the timer (+116) counts down from 1.0 s; at 0 the pin sets and the next pin (in data order) becomes current. Outside, it counts back up to 1.0 (leaving the pin undoes the hold gradually) |
+| Feedback | LOCKTOPUS_SERVO cue and pad vibration, strength 1 - dist (full inside); the draw shows the eight pins round a circle with the current pin's hold. **Rare draws no pick or cursor** for the stick itself |
+
+So a pin is "angle and deflection within the radius". A full-deflection stick can only set pins with 1 - deflection
+< radius, and the eight key directions only pins within the radius of one of them. The 12 locks in the game data
+(by the level package that holds them; the `test` lock and `ruin_nice_and_easy_for_chris`, one pin straight down,
+are in most packages and the multiplayer vehicle lock is the `test` lock):
+
+| Lock data | Level package | Pins (angle deg, deflection) | Pins the 8 key directions can't set at 0.45 / 0.33 / 0.20 |
+|---|---|---|---|
+| club_officebackdoor | Nightclub | 90 0.94; 0 0.94 | - / - / - |
+| club_autogunroom | Nightclub | 0 0.86; 180 0.86 | - / - / - |
+| ware_factorysidedoor | Subway | 45 1.10; 0 0.78; 225 1.10 | - / - / 1 (0 deg needs a part-way stick) |
+| ware_diversionsidedoor | Subway | 66 0.86; 163 0.82; 107 0.82 | - / 1 / 3 |
+| labo_generatorswitch | Laboratory | 309 1.11; 212 1.02; 252 0.90; 90 0.94; 138 1.15; 308 1.08 | - / - / 2 |
+| labo_gasvalve | Laboratory | 45 1.10; 227 1.18; 350 0.87; 224 1.19; 38 1.09; 310 1.13 | - / - / 1 |
+| mans_ladderlock1 | Mansion (also Bridge, Trinity) | 42 1.11; 221 1.08; 138 1.06; 306 0.97 | - / - / - |
+| mans_intercomdoor | Mansion | 65 0.88; 264 0.71; 336 0.77; 214 0.83 | - / 2 / 4 (two need a part-way stick) |
+| airp_main_gate | River | 45 1.10; 125 1.00; 240 0.94; 0 0.86; 217 1.03; 241 0.94 | - / - / 2 |
+| cs2_water_valve | Trinity Escape | 217 1.03; 240 0.91; 0 0.86; 127 0.97; 240 0.94; 45 1.10; 217 1.03; 125 1.00 | - / - / 2 |
+| ruin_nice_and_easy_for_chris | most levels | 270 0.94 | - / - / - |
+| test (and multi_vehiclelockdata) | several | 318 1.05; 125 0.86; 37 0.78 | - / - / 2 (one part-way) |
+
+In all: of 47 pins, 0 are out of reach on Agent, 3 on Secret Agent and 17 on Perfect / Dark Agent, 4 of which need
+a part-way stick whatever the angle. (Which door uses which lock data is not in the propsetups as a name; the
+set-up log line names the data of each lock opened.)
+
+**The fix:** while the Locktopus runs for pad 0, after Rare's controller update, a **virtual stick** is written to
++44 / +48 instead of the snapped keys:
+
+- the left / right keys of either stick (A / D, Numpad 4 / 6) turn the pick round the circle: a full turn in
+  `pdz_minigame_key_turn_s` (2.5 s); with **Shift** held `pdz_minigame_key_slow` (0.4) of that speed for fine control;
+- the up / down keys (W / S, Numpad 8 / 2) push it out and pull it in (centre to full deflection in 1 s, Shift slows
+  that too);
+- the mouse moves the same point (`pdz_minigame_mouse_counts`, 400 counts from the centre to full deflection), so
+  mouse and keys work together;
+- it stays where it was left (so a pin can be held for its second), starts at the centre with each lock, and follows
+  a controller's left stick while that is pushed;
+- a controller is untouched: nothing is written while its left stick is pushed, nor before a key or the mouse has
+  been used in the lock. Off = Rare's read of the left stick only.
+- `pdz_minigame_inputs` (0.9.4: "both", "mouse" or "keys"; the settings window's Controls tab, Locktopus) leaves the
+  mouse or the keys out; keys held in "mouse" mode write the unmoved virtual stick, so they don't steer through Rare's
+  own read either.
+
+**The settings window's practice dial** (Controls tab, Locktopus group, 0.9.4): the same step (`pdz::minigame::
+SteerPick`, shared with the game) and Rare's pin rule (`StepPinHold`: within the radius the 1 s hold counts down by dt,
+outside it counts back up, as `sub_826492E8` does) on the pins of one of the 12 locks above, at random (New lock), with Rare's radius for the Agent / Secret Agent / Perfect Agent choice under it (0.45 / 0.33 / 0.20, default Secret Agent). It uses the
+window's unsaved Mouse / Keys / Both choice and sensitivity and the key list's current Move / Strafe / Look keys.
+`pdz_settings_test_dial` plays it with simulated keys and mouse counts (`keys_pa` / `mouse_pa`: the Mansion intercom door on Perfect Agent) and captures it mid-lock and finished.
+
+Other minigames: the demo kit's tile puzzle (`sub_8264ADE0`) reads the same fields as a digital pad; with the fix the
+keys of either stick move its cursor (snapped, as a pad press). The Data Thief reads no stick.
+
+**Testing tools:** `pdz_minigame_input_log` (each lock's data, radius and pins at its start; twice a second the
+subgame's state, pin, hold, the stick it read, the virtual stick, the pad's raw sticks, the keys, the mouse, what was
+written; a line as each pin sets), `pdz_minigame_test_aim` (writes the current pin's own target), and
+`pdz_minigame_test_radius` (replaces the difficulty's radius at a lock's start, e.g. 0.2 to test the hard radius on
+any difficulty).
+
 ## Menus
 
 Whenever no on-foot look ran for 300 ms (front end, pause, briefings, cutscenes, loading), mnk is in menu mode:
@@ -112,6 +261,9 @@ Whenever no on-foot look ran for 300 ms (front end, pause, briefings, cutscenes,
 - fire, aim, Start and weapon select don't see those keys meanwhile;
 - so Start is P there (since 2026-11-06 the default Start bind is `Escape,P`: with Esc alone no menu could get a
   Start, and the multiplayer setup screen needs it). P is no menu key, so it is Start in menus and in play.
+- The settings window's Controls tab (2026-11-08) shows an orange warning while Start has only menu keys (Enter, Esc,
+  left / right click, the wheel; Numpad Enter counts as Enter) or no key: add a plain key, P is Start in menus by
+  default. It updates with every rebind, Clear and Reset.
 
 There is no cursor (point-and-click is a later job). Button prompts stay Xbox.
 

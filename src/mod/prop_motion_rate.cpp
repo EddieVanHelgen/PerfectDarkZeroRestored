@@ -23,8 +23,7 @@
 // frames Rare's test dropped 357, the fix applied 185 of them. (Not every door moves this way: one Mansion door's
 // root-motion turn is exactly zero at any rate; it moves otherwise and opened at 120 before the fix too.)
 //
-// pdz_door_30hz (default off): PDZ Reinstated's door method (their game_patches.cpp, MIT licence, Nikolai Gorb /
-// 2023PerfectDark): the door's update runs at most every 1/30 s with the accumulated dt, so each frame's delta is
+// pdz_door_30hz (default off): PDZ Reinstated's door method (their game_patches.cpp, MIT licence): the door's update runs at most every 1/30 s with the accumulated dt, so each frame's delta is
 // large enough for Rare's test. Kept as an alternative for A/B; with pdz_fix_prop_root_motion on it isn't needed.
 //
 // pdz_fix_lab_keycard (default OFF since 0.9.3.1: unproven; the 8 Nov hand test still found the card on the floor
@@ -33,6 +32,11 @@
 // Reinstated's physics_timing.cpp (pdz_lab_key_stability, MIT licence): hook sub_825E0EF0 (the placed prop's body
 // setup, r4 = prop, r5 = descriptor, +32 = motion type), only for model aid_darkcharacter_props_niknak_keycard at
 // Rare's authored position (-3541.062, 787.969, 2166.362), mission 5, single player; motion 1 -> 7 for that call only.
+// Since 0.9.4 the same switch also fixes the desk the card lies on and its desk group, each only at its authored
+// spot: the table aid_darkcharacter_xenon_props_furniture_lab_table_level0 (-3450.81, 699.94, 2211.63), the
+// computer_monitor (-3368.90, 787.50, 2229.43), the computer_keyboard (-3389.65, 799.38, 2180.94) (motion 1, dynamic)
+// and the furniture_chair_swivel (-3392.36, 700.00, 2130.99) (motion 6, keyframed): Rare's sit-down snap of the
+// scientist s4l3 at the level start flung the monitor and knocked the chair over at high frame rates.
 //
 // pdz_door_log (default off, diagnostics): a line per door per frame while a door is opening or closing, plus every
 // state change: state, dt, the frame's root-motion rotation (degrees), whether Rare's test dropped it and whether the
@@ -44,6 +48,8 @@
 #include <cstdint>
 #include <chrono>
 #include <cstring>
+#include <string>
+#include <unordered_map>
 
 #include <fmt/format.h>
 
@@ -65,12 +71,26 @@ REXCVAR_DEFINE_BOOL(pdz_door_30hz, false, "Gameplay",
                     "Alternative door fix (PDZ Reinstated's): a door's update runs at most 30 times a second with the "
                     "time saved up. Off by default (pdz_fix_prop_root_motion covers it)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(pdz_fix_lab_keycard, false, "Gameplay",
+REXCVAR_DEFINE_BOOL(pdz_fix_lab_keycard, true, "Gameplay",
                     "Laboratory: the desk keycard stays on the table at any frame rate (a fixed pickup body; from PDZ "
-                    "Reinstated). Default off: unproven (8 Nov hand test: the card still fell to the floor)")
+                    "Reinstated, MIT licence). Rare's card sits 9 cm inside the desk top and is forced out when "
+                    "the scientist sits down (even at 30 fps on the console the card goes missing). The desk, its "
+                    "monitor, keyboard and chair get fixed bodies too, so his sit-down can't throw them. On by default")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(pdz_door_log, false, "Diagnostics",
                     "Log doors per frame while they move (state, dt, the frame's turn, dropped / applied, total turn)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_lab_prop_log, false, "Diagnostics",
+                    "Laboratory: log the props within 4 m of the desk keycard (position, its first 16 words, motion type) "
+                    "every frame for 10 s after the level starts; then whenever one moves, and all every 10 s")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(pdz_fix_keyframe_jump, false, "Gameplay",
+                    "Above 30 fps, a keyframed body whose target jumps (a character snapped into a chair, a teleport) "
+                    "is driven at Rare's 30 fps rate until it gets there, so it hits what it overlaps no harder than on "
+                    "the Xbox (Laboratory: the scientist sitting down at the keycard desk threw the desk, monitor and "
+                    "keycard across the room at 120 fps). Continuous animation is unchanged. Default off until tested")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(pdz_test_open_doors, 0, "Diagnostics",
@@ -80,6 +100,8 @@ REXCVAR_DEFINE_INT32(pdz_test_open_doors, 0, "Diagnostics",
 REX_EXTERN(__imp__sub_82705460); // is the quaternion at r3 identity? (r3 = 1 / 0)
 REX_EXTERN(__imp__sub_82561240); // DoorProp per-frame update (r3 = door, f1 = dt)
 REX_EXTERN(__imp__sub_825E0EF0); // placed prop body setup (r4 = prop, r5 = descriptor)
+REX_EXTERN(__imp__sub_824E8BC8);
+REX_EXTERN(__imp__sub_824E7A08); // Havok hard keyframe (r3 = &target position, r4 = &target rotation, r6 = body, f1 = 1/dt) // the physics manager's update (f1 = frame dt): steps Havok once a frame
 REX_EXTERN(sub_82562E98);          // DoorProp Open(r3 = door, r4 = side)
 
 namespace
@@ -350,10 +372,207 @@ REX_HOOK_RAW(sub_82561240)
   }
 }
 
+namespace
+{
+  // pdz_lab_prop_log: the props near the Laboratory desk keycard's authored spot.
+  constexpr float kCardAt[3] = {-3541.062f, 787.969f, 2166.362f};
+  struct LabProp
+  {
+    uint32_t prop = 0, setup = 0, motion = 0;
+    std::string name;
+    float last[3] = {};
+  };
+  std::array<LabProp, 16> g_lab{};
+  uint32_t g_lab_n = 0, g_lab_state = 0;
+  double g_lab_time = -1.0, g_lab_next = 0.0;
+
+  std::string SetupName(uint8_t *base, uint32_t setup)
+  {
+    const uint32_t name = Readable(base, setup, 144) ? Load32(base, setup + 140) : 0;
+    if (!Readable(base, name, 64))
+    {
+      return "?";
+    }
+    const char *c = reinterpret_cast<const char *>(base + name);
+    size_t n = 0;
+    while (n < 63 && c[n] >= 32 && c[n] < 127)
+    {
+      ++n;
+    }
+    return std::string(c, n);
+  }
+
+  std::string Words(const uint8_t *base, uint32_t a, int n)
+  {
+    std::string s;
+    for (int i = 0; i < n; ++i)
+    {
+      s += fmt::format("{}{:.3f}", i ? " " : "", LoadF(base, a + 4 * i));
+    }
+    return s;
+  }
+
+  void LabRegister(uint8_t *base, uint32_t prop, uint32_t descriptor)
+  {
+    if (!REXCVAR_GET(pdz_lab_prop_log) || !Readable(base, prop, 128))
+    {
+      return;
+    }
+    const uint32_t session = Load32(base, kGame);
+    const uint32_t setup = Load32(base, prop + 84);
+    if (!Readable(base, session, 44) || base[session + 25] != 5 || !Readable(base, setup, 64))
+    {
+      return;
+    }
+    const float x = LoadF(base, setup + 4), y = LoadF(base, setup + 8), z = LoadF(base, setup + 12);
+    const float d = std::sqrt((x - kCardAt[0]) * (x - kCardAt[0]) + (y - kCardAt[1]) * (y - kCardAt[1]) +
+                              (z - kCardAt[2]) * (z - kCardAt[2]));
+    if (!(d <= 400.0f))
+    {
+      return;
+    }
+    const uint32_t state = Load32(base, kGame);
+    if (state != g_lab_state)
+    {
+      g_lab_state = state;
+      g_lab_n = 0;
+      g_lab_time = -1.0;
+    }
+    if (g_lab_n >= g_lab.size())
+    {
+      return;
+    }
+    LabProp &l = g_lab[g_lab_n++];
+    l = LabProp{};
+    l.prop = prop;
+    l.setup = setup;
+    l.motion = Readable(base, descriptor, 36) ? Load32(base, descriptor + 32) : ~0u;
+    l.name = SetupName(base, setup);
+    REXLOG_INFO("pdz_lab_prop: registered {:08X} '{}' type {} motion {} | setup at ({:.2f}, {:.2f}, {:.2f}), {:.0f} cm "
+                "from the card | setup +16.. {} | prop +0.. {}",
+                prop, l.name, Load32(base, prop + 12), l.motion, x, y, z, d, Words(base, setup + 16, 12),
+                Words(base, prop, 32));
+  }
+} // namespace
+
+namespace
+{
+  // pdz_fix_keyframe_jump: per body, the last distance to its target and whether it's catching up after a jump.
+  struct KeyState
+  {
+    float last = 0.0f;
+    bool jumping = false;
+    uint32_t frames = 0;
+  };
+  std::unordered_map<uint32_t, KeyState> g_keys;
+  uint32_t g_keys_state = 0;
+  uint64_t g_jumps = 0;
+} // namespace
+
+// sub_824E7A08 (Havok's hard keyframe): the body's velocity = (target - its position) x 1/dt, so it gets there in one
+// step. The position read: [body +80] (the motion) +96. Havok works in metres.
+REX_HOOK_RAW(sub_824E7A08)
+{
+  const uint32_t target = ctx.r3.u32, body = ctx.r6.u32;
+  const double inv_dt = ctx.f1.f64;
+  const bool fix = REXCVAR_GET(pdz_fix_keyframe_jump);
+  const bool log = REXCVAR_GET(pdz_lab_prop_log) && g_lab_time >= 0.0 && g_lab_time < 10.0;
+  const uint32_t motion = body >= 0x10000u ? Load32(base, body + 80) : 0;
+  if ((!fix && !log) || motion < 0x10000u || target < 0x10000u)
+  {
+    __imp__sub_824E7A08(ctx, base);
+    return;
+  }
+  const float dx = LoadF(base, target) - LoadF(base, motion + 96);
+  const float dy = LoadF(base, target + 4) - LoadF(base, motion + 100);
+  const float dz = LoadF(base, target + 8) - LoadF(base, motion + 104);
+  const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+  const uint32_t state = Load32(base, kGame);
+  if (state != g_keys_state || g_keys.size() > 8192)
+  {
+    g_keys.clear();
+    g_keys_state = state;
+  }
+  KeyState &k = g_keys[body];
+  bool capped = false;
+  if (fix && inv_dt > 31.0 && inv_dt < 1000.0)
+  {
+    if (!k.jumping && d > 0.08f && d > 3.0f * k.last + 0.02f)
+    {
+      k.jumping = true; // the target jumped: drive it at Rare's 30 fps rate until it gets there
+      k.frames = 0;
+      ++g_jumps;
+    }
+    if (k.jumping && (d < 0.01f || ++k.frames > 120))
+    {
+      k.jumping = false;
+    }
+    if (k.jumping)
+    {
+      ctx.f1.f64 = 30.0;
+      capped = true;
+    }
+  }
+  if (log && d > 0.05f)
+  {
+    REXLOG_INFO("pdz_lab_prop: keyframe t {:.4f} caller {:08X} body {:08X} target ({:.3f}, {:.3f}, {:.3f}) m, {:.3f} m "
+                "away (last {:.3f}), 1/dt {:.1f} -> {:.1f} m/s{}",
+                g_lab_time, uint32_t(ctx.lr), body, LoadF(base, target), LoadF(base, target + 4), LoadF(base, target + 8),
+                d, k.last, inv_dt, d * ctx.f1.f64, capped ? " (pdz_fix_keyframe_jump: Rare's 30 fps rate)" : "");
+  }
+  k.last = d;
+  __imp__sub_824E7A08(ctx, base);
+}
+
+// The physics manager's update: after Havok's step, log the registered props.
+REX_HOOK_RAW(sub_824E8BC8)
+{
+  const double dt = ctx.f1.f64;
+  __imp__sub_824E8BC8(ctx, base);
+  if (!g_lab_n || !REXCVAR_GET(pdz_lab_prop_log))
+  {
+    return;
+  }
+  const uint32_t so = Load32(base, kGame);
+  if (so < 0x10000u || Load32(base, so + 8) != 21)
+  {
+    return;
+  }
+  if (g_lab_time < 0.0)
+  {
+    g_lab_time = 0.0;
+    g_lab_next = 0.0;
+    REXLOG_INFO("pdz_lab_prop: level running: logging {} props (paced {} Hz)", g_lab_n, pdz::pace::EffectiveHz());
+  }
+  g_lab_time += dt;
+  // Every frame for the first 10 s; after that, a prop whenever it moves (over 5 cm/s) and all of them every 10 s, for
+  // the whole level (where the card is when the player gets there).
+  const bool heartbeat = g_lab_time > 10.0 && g_lab_time >= g_lab_next;
+  if (heartbeat)
+  {
+    g_lab_next = g_lab_time + 10.0;
+  }
+  for (uint32_t i = 0; i < g_lab_n; ++i)
+  {
+    LabProp &l = g_lab[i];
+    const float p[3] = {LoadF(base, l.prop + 48), LoadF(base, l.prop + 52), LoadF(base, l.prop + 56)};
+    const float v = dt > 0 ? float(std::sqrt((p[0] - l.last[0]) * (p[0] - l.last[0]) + (p[1] - l.last[1]) *
+                                             (p[1] - l.last[1]) + (p[2] - l.last[2]) * (p[2] - l.last[2])) / dt)
+                           : 0.0f;
+    if (g_lab_time <= 10.0 || heartbeat || v > 5.0f)
+    {
+      REXLOG_INFO("pdz_lab_prop: t {:.4f} dt {:.4f} {} '{}' pos ({:.2f}, {:.2f}, {:.2f}) speed {:.1f} cm/s | +0.. {}",
+                  g_lab_time, dt, i, l.name, p[0], p[1], p[2], v, Words(base, l.prop, 12));
+    }
+    std::memcpy(l.last, p, sizeof(p));
+  }
+}
+
 REX_HOOK_RAW(sub_825E0EF0)
 {
   const uint32_t descriptor = ctx.r5.u32;
   const uint32_t prop = ctx.r4.u32;
+  LabRegister(base, prop, descriptor);
   bool key = false;
   if (REXCVAR_GET(pdz_fix_lab_keycard) && Readable(base, descriptor, 36) && Load32(base, descriptor + 32) == 1 &&
       Readable(base, prop, 96) && Load32(base, prop + 12) == 14 && Load32(base, prop + 92) == 0)
@@ -376,6 +595,60 @@ REX_HOOK_RAW(sub_825E0EF0)
         }
       }
     }
+  }
+  // The desk group (0.9.4): the same switch, scope and spot test, for the card's desk, monitor, keyboard and chair.
+  const char *desk_part = nullptr;
+  uint32_t desk_motion = 0;
+  if (!key && REXCVAR_GET(pdz_fix_lab_keycard) && Readable(base, descriptor, 36) && Readable(base, prop, 96) &&
+      Load32(base, prop + 12) == 8)
+  {
+    desk_motion = Load32(base, descriptor + 32);
+    const uint32_t session = Load32(base, kGame);
+    const uint32_t setup = Load32(base, prop + 84);
+    if ((desk_motion == 1 || desk_motion == 6) && Readable(base, session, 44) && Readable(base, setup, 144) &&
+        base[session + 25] == 5 && Load32(base, session + 40) == 0)
+    {
+      struct DeskPart
+      {
+        const char *model;
+        float at[3];
+      };
+      static constexpr DeskPart kDesk[] = {
+          {"aid_darkcharacter_xenon_props_furniture_lab_table_level0", {-3450.81f, 699.94f, 2211.63f}},
+          {"aid_darkcharacter_xenon_props_electrical_computer_monitor", {-3368.90f, 787.50f, 2229.43f}},
+          {"aid_darkcharacter_xenon_props_electrical_computer_keyboard", {-3389.65f, 799.38f, 2180.94f}},
+          {"aid_darkcharacter_xenon_props_furniture_chair_swivel", {-3392.36f, 700.00f, 2130.99f}},
+      };
+      const uint32_t name = Load32(base, setup + 140);
+      for (const DeskPart &part : kDesk)
+      {
+        const size_t n = std::strlen(part.model) + 1;
+        if (!Readable(base, name, uint32_t(n)) || std::memcmp(base + name, part.model, n) != 0)
+        {
+          continue;
+        }
+        bool here = true;
+        for (int i = 0; i < 3; ++i)
+        {
+          const float v = LoadF(base, setup + 4 + 4 * i);
+          here = here && std::isfinite(v) && std::fabs(v - part.at[i]) <= 0.05f;
+        }
+        if (here)
+        {
+          desk_part = part.model;
+        }
+        break;
+      }
+    }
+  }
+  if (desk_part)
+  {
+    Store32(base, descriptor + 32, 7); // fixed body for this call (Havok motion 7)
+    __imp__sub_825E0EF0(ctx, base);
+    Store32(base, descriptor + 32, desk_motion);
+    REXLOG_INFO("pdz_fix_lab_keycard: Laboratory keycard desk: fixed body for '{}' (motion {} -> 7)", desk_part,
+                desk_motion);
+    return;
   }
   if (!key)
   {

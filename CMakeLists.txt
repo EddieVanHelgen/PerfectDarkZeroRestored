@@ -74,6 +74,8 @@ list(APPEND PERFECTDARKZERORECOMP_SOURCES
     src/game_patches.cpp
     src/mod/aim_assist.cpp
     src/mod/mouse_look.cpp
+    src/mod/mnk_layout.cpp
+    src/mod/minigame_input.cpp
     src/mod/zoom_steps.cpp
     src/mod/fov_tuning.cpp
     src/mod/look_tuning.cpp
@@ -91,16 +93,21 @@ list(APPEND PERFECTDARKZERORECOMP_SOURCES
     src/mod/cue_fixes.cpp
     src/mod/audio_presence_log.cpp
     src/mod/restorations.cpp
+    src/mod/lab_restorations.cpp
+    src/mod/lab_cut_content.cpp
     src/mod/mp_announcer.cpp
     src/mod/anim_log.cpp
     src/mod/anim_viewer.cpp
     src/mod/ai_behaviour_debug.cpp
     src/mod/physics_step.cpp
+    src/mod/unarmed_log.cpp
     src/mod/prop_motion_rate.cpp
+    src/mod/player_move.cpp
     src/mod/rate_fixes.cpp
     src/mod/file_read_log.cpp
     src/mod/stream_bank_warm.cpp
     src/mod/transparency_water.cpp
+    src/mod/distant_lights.cpp
     src/mod/native_memcpy.cpp
     src/mod/hook_profile.cpp
     src/mod/crash_dump.cpp
@@ -195,9 +202,11 @@ if(PDZ_NO_MODS)
 endif()
 # Counter-Operative (docs/COUNTEROP_STUDY.md), parked 2026-10-30: out of the build unless asked for. ON compiles
 # src/mod/counter_op.cpp (its hooks and pdz_counterop* cvars) and the one call site in cut_scenarios.cpp.
-option(PDZ_COUNTEROP "Build the parked Counter-Operative mod (src/mod/counter_op.cpp)" OFF)
+# Branch d15-counterop (8 Nov 2026): ON here so the prototype builds and can be tested; the runtime switch
+# pdz_counterop stays off by default and every hook passes straight through while it is off. tu3-base keeps OFF.
+option(PDZ_COUNTEROP "Build the parked Counter-Operative mod (src/mod/counter_op.cpp)" ON)
 if(PDZ_COUNTEROP)
-    target_sources(perfectdarkzerorecomp PRIVATE src/mod/counter_op.cpp)
+    target_sources(perfectdarkzerorecomp PRIVATE src/mod/counter_op.cpp src/mod/counter_op_menu.cpp)
     target_compile_definitions(perfectdarkzerorecomp PRIVATE PDZ_COUNTEROP=1)
 endif()
 

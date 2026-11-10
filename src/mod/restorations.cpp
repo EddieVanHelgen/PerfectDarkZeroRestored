@@ -32,6 +32,9 @@
 //     play as positioned sounds on the speaker (sub_821FF3C8, as the level
 //     scripts play sounds on characters);
 //   - up to three of the other staff nearest Jo say 147.
+//   With pdz_lab_blackout_lines (lab_restorations.cpp, a) the speakers are
+//   limited to staff standing inside one of the four darkened light-group
+//   boxes, so nobody in the still-lit Lab One / Lab Two says the lines.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -49,6 +52,7 @@
 #include <rex/ui/keybinds.h>
 
 #include "../game_cvars.h"
+#include "lab_restorations.h"
 #include "restorations.h"
 #include "hook_profile.h" // pdz_hook_profile (must follow <rex/hook.h>)
 
@@ -232,13 +236,17 @@ namespace
     return d2;
   }
 
-  // The living staff within earshot of Jo, nearest first.
-  std::vector<Staff> NearbyStaff(PPCContext &ctx, uint8_t *base, uint32_t script)
+  // The living staff within earshot of Jo, nearest first. With
+  // pdz_lab_blackout_lines only staff inside a darkened light-group box;
+  // `lit` counts the ones that filter dropped.
+  std::vector<Staff> NearbyStaff(PPCContext &ctx, uint8_t *base, uint32_t script, size_t *lit)
   {
     std::vector<Staff> out;
     float jo[3] = {};
     const uint32_t player = Player(base);
     const bool have_jo = player && PositionOf(ctx, base, player, jo);
+    // pdz_lab_blackout_coverage 3 darkens every room: no box filter then.
+    const bool boxes = REXCVAR_GET(pdz_lab_blackout_lines) && lab_restorations::BlackoutCoverage() < 3;
     for (uint32_t slot = kSlotFirst; slot <= kSlotLast; slot += kSlotStep)
     {
       const uint32_t c = Load32(base, script + slot);
@@ -255,6 +263,14 @@ namespace
       if (have_jo && s.d2 > kHearing2)
       {
         continue;
+      }
+      if (boxes && !lab_restorations::InDarkenedBox(s.pos))
+      {
+        if (lit)
+        {
+          ++*lit;
+        }
+        continue; // his room stays lit
       }
       const uint32_t voice = Load32(base, c + kCharVoiceIndex);
       s.scientist = voice == 15 || voice == 16;
@@ -312,7 +328,21 @@ namespace
 
   void LightsOut(PPCContext &ctx, uint8_t *base, uint32_t script)
   {
-    const std::vector<Staff> staff = NearbyStaff(ctx, base, script);
+    size_t lit = 0;
+    const std::vector<Staff> staff = NearbyStaff(ctx, base, script, &lit);
+    if (REXCVAR_GET(pdz_lab_blackout_lines))
+    {
+      if (lab_restorations::BlackoutCoverage() < 3)
+      {
+        REXLOG_INFO("pdz_lab_blackout_lines: lights out: {} staff within 30 m inside a darkened box, {} in lit rooms skipped",
+                    staff.size(), lit);
+      }
+      else
+      {
+        REXLOG_INFO("pdz_lab_blackout_lines: lights out: {} staff within 30 m (coverage 3: every room is dark, no box filter)",
+                    staff.size());
+      }
+    }
     const Staff *a = nullptr;
     const Staff *b = nullptr;
     for (const Staff &s : staff)
@@ -363,7 +393,7 @@ namespace restorations
 {
   void Tick(PPCContext &ctx, uint8_t *base)
   {
-    if (!REXCVAR_GET(pdz_restore_light_speech))
+    if (!REXCVAR_GET(pdz_restore_light_speech) && !REXCVAR_GET(pdz_lab_blackout_lines))
     {
       return;
     }
@@ -401,6 +431,7 @@ namespace
     const char *what = "";
   };
   std::atomic<bool> g_blackout_key{false};
+  std::atomic<bool> g_key_pending{false}; // timed bits still to send (pdz_test_lab_blackout_now's later tannoys)
   std::mutex g_key_mutex;
   std::vector<TimedBits> g_key_bits;
 } // namespace
@@ -424,20 +455,51 @@ namespace restorations
 } // namespace restorations
 
 // sub_823272E0: the Laboratory script's message handler (r3 = the script;
-// r5-r9 = 64-bit message masks).
+// r5-r9 = 64-bit message masks). pdz_test_lab_blackout_now (testing tool,
+// for input scripts) sends the same messages as the key when its value
+// changes to 1; to 2 it sends the switch route instead: CHAN_04 +
+// TANNOY_TRIGGER01 (flag 130, r7 high bit 0x4) in place of CHAN_06, plus the
+// switch-route marker flag 37 (r5 low bit 0x20; Rare's handler never tests
+// it, only lab_restorations.cpp's pdz_lab_power_return does).
 REX_HOOK_RAW(sub_823272E0)
 {
-  if (REXCVAR_GET(pdz_test_lab_blackout_key))
+  const int32_t blackout_now = REXCVAR_GET(pdz_test_lab_blackout_now);
+  static std::atomic<int32_t> last_now{0};
+  int route = 0; // 0 none, 1 lockbot-style (CHAN_06), 2 the switch (CHAN_04 + flag 37)
+  if (blackout_now != last_now.load())
+  {
+    last_now.store(blackout_now);
+    if (blackout_now == 1 || blackout_now == 2)
+    {
+      route = int(blackout_now);
+    }
+  }
+  if (REXCVAR_GET(pdz_test_lab_blackout_key) || route != 0 || g_key_pending.load())
   {
     std::lock_guard<std::mutex> lock(g_key_mutex);
     const auto now = Clock::now();
     if (g_blackout_key.exchange(false))
     {
+      route = 1;
+    }
+    if (route)
+    {
       g_key_bits.clear();
-      g_key_bits.push_back({now, 0x40, 0, uint64_t(0x8 | 0x10) << 32, "lights out, CHAN_06, darkness"});
+      g_key_pending.store(true);
+      if (route == 2)
+      {
+        g_key_bits.push_back({now, 0x40 | 0x20, 0, uint64_t(0x4 | 0x10) << 32,
+                              "lights out, CHAN_04 + TANNOY_TRIGGER01, darkness, switch-route marker (flag 37)"});
+      }
+      else
+      {
+        g_key_bits.push_back({now, 0x40, 0, uint64_t(0x8 | 0x10) << 32, "lights out, CHAN_06, darkness"});
+      }
       g_key_bits.push_back({now + std::chrono::seconds(10), 0, 0x2, 0, "TANNOY_TRIGGER02"});
       g_key_bits.push_back({now + std::chrono::seconds(52), 0, 0x4, 0, "TANNOY_TRIGGER03"});
-      REXLOG_INFO("pdz_test: blackout key pressed in Laboratory (script {:08X})", ctx.r3.u32);
+      REXLOG_INFO("pdz_test: blackout {} in Laboratory (script {:08X}), route {}",
+                  route == int(blackout_now) ? "cvar (pdz_test_lab_blackout_now)" : "key pressed", ctx.r3.u32,
+                  route == 2 ? "switch" : "lockbot");
     }
     for (auto it = g_key_bits.begin(); it != g_key_bits.end();)
     {
@@ -452,7 +514,8 @@ REX_HOOK_RAW(sub_823272E0)
       REXLOG_INFO("pdz_test: blackout key: sent {} (r5 {:X}, r6 {:X}, r7 {:X})", it->what, it->r5, it->r6, it->r7);
       it = g_key_bits.erase(it);
     }
-    if (ctx.r5.u64 | ctx.r6.u64 | ctx.r7.u64 | ctx.r8.u64 | ctx.r9.u64)
+    g_key_pending.store(!g_key_bits.empty());
+    if (REXCVAR_GET(pdz_test_lab_blackout_key) && (ctx.r5.u64 | ctx.r6.u64 | ctx.r7.u64 | ctx.r8.u64 | ctx.r9.u64))
     {
       REXLOG_INFO("pdz_test: Laboratory message: r5 {:016X} r6 {:016X} r7 {:016X} r8 {:016X} r9 {:016X}", ctx.r5.u64,
                   ctx.r6.u64, ctx.r7.u64, ctx.r8.u64, ctx.r9.u64);
@@ -460,8 +523,19 @@ REX_HOOK_RAW(sub_823272E0)
   }
   const uint32_t script = ctx.r3.u32;
   const bool lights = (ctx.r5.u64 & kLightsMessage) != 0;
+  const lab_restorations::Message message{ctx.r5.u64, ctx.r6.u64, ctx.r7.u64, ctx.r8.u64, ctx.r9.u64};
+  const bool lab = IsGuestPointer(script) && (message.r5 | message.r6 | message.r7 | message.r8 | message.r9) != 0;
+  if (lab)
+  {
+    lab_restorations::BeforeLabMessage(ctx, base, script, message);
+  }
   __imp__sub_823272E0(ctx, base);
-  if (!lights || !REXCVAR_GET(pdz_restore_light_speech) || !IsGuestPointer(script))
+  if (lab)
+  {
+    lab_restorations::AfterLabMessage(ctx, base, script, message);
+  }
+  if (!lights || !IsGuestPointer(script) ||
+      (!REXCVAR_GET(pdz_restore_light_speech) && !REXCVAR_GET(pdz_lab_blackout_lines)))
   {
     return;
   }

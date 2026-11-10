@@ -31,6 +31,7 @@
 //   (+0x32C, same arguments) are hooked the same way; every other player
 //   counts as hostile.
 #include "combat_log.h"
+#include "aim_assist.h" // pdz_autoaim_log: a line per player shot
 
 #include <algorithm>
 #include <array>
@@ -732,6 +733,7 @@ REX_HOOK_RAW(sub_82238938)
                 IsGuestPointer(weapon) ? LoadBe32(base, weapon + kWeaponOwner) : 0, g_player,
                 player_shot ? "player's" : "not the player's");
   }
+  aim_assist::OnShot(base, weapon);
   shot_log::BeforeShot(ctx, base);
   if (!player_shot)
   {

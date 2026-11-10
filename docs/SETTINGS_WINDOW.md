@@ -18,19 +18,43 @@ Never in a developer's build or with `pdz_setup_quiet`. Play and Safe mode save 
 | Tab | Settings | Writes |
 |---|---|---|
 | Display | Monitor, Borderless / Fullscreen, Resolution (Fullscreen only; Desktop by default), Render scale 100 / 75 / 50 %, VSync / VRR On / VRR (G-Sync / FreeSync) / Off (each with its own help line; Off warns: tearing and judder), Field of view 73-103 degrees across 16:9 with Default (Rare's) | `monitor`, `fullscreen`, `fullscreen_exclusive`, `resolution` (Fullscreen with a chosen size only), `pdz_native_scale` (75 / 50 % of the desktop's auto scale, nearest integer, 50 % one lower where both would be the same; 100 % = no line, and a value the file had is dropped at once; the saved value is shown again when the window reopens, 0.9.2), `pdz_present_pacing` (fixed / vrr; a hand-set present / latch is kept by On), `vsync` (read from the settings file: the GPU plugin that owns it isn't loaded when the window opens, 0.9.2), `pdz_fov_scale` |
-| Frame rate | Campaign Auto / 120 / 60 (Auto: what this screen gets, in a line); Multiplayer 60, greyed out | `pdz_sp_120` |
+| Frame rate | Campaign Auto / 120 / 60 (Auto: what this screen gets, in a line); Multiplayer 60, greyed out; Split screen Auto / 60 / 40 / 30 (2026-11-08: the rate while 2 or more local players share the screen in a co-op or multiplayer level; Auto = 60 with 2 players, 40 with 3 or 4 on 120 Hz pacing; see below) | `pdz_sp_120`, `pdz_splitscreen_cap` (0 = Auto) |
 | Map packs | each pack, its maps and status; Add / Remove; Add pack files...; Check installed packs | the packs (below) |
-| Controls | mouse sensitivity, invert, Step zoom (off), one row per action with two keys each (rebind by pressing), Reset controls to defaults | `pdz_mouse_sensitivity`, `pdz_mouse_invert`, `pdz_zoom_steps` (only when changed) and the changed `keybind_*` lines in `mapping.toml` (comments kept) |
+| Controls | mouse sensitivity, invert, Step zoom (off), one row per action with two keys each (rebind by pressing), Reset controls to defaults; an orange warning line under the buttons while Start has only keys the menus use (Enter, Esc, left / right click, the wheel) or none: there is then no Start in menus, add a plain key (P is Start in menus by default); it follows every change of the rows (2026-11-08); a Locktopus group (0.9.4): Steer with Mouse / Keys / Both, Mouse sensitivity Low .. High (800 .. 80 counts, 400 in the middle), the keys as text from the current binds, and a practice dial on Rare's own locks with New lock and Agent / Secret Agent / Perfect Agent (docs/MOUSE_KEYBOARD.md) | `pdz_mouse_sensitivity`, `pdz_mouse_invert`, `pdz_zoom_steps`, `pdz_minigame_inputs`, `pdz_minigame_mouse_counts` (each only when changed; a Locktopus change also sets `pdz_fix_minigame_keyboard = true`) and the changed `keybind_*` lines in `mapping.toml` (comments kept) |
 | Advanced | Open settings file, Open logs folder, Rebuild shaders (removes `generated.json`), Reset to defaults, Network play | `net_lan` |
 
 - **Help:** the line at the bottom explains whatever control has the mouse over it or the keyboard focus (polled
-  every 100 ms; no hover tooltips).
+  every 100 ms; no hover tooltips). It is owner-drawn, at most two lines, centred beside its info icon (0.9.4).
+- **Layout check (0.9.4):** `pdz_settings_test_capture` also checks every tab (text that doesn't fit its control,
+  overlaps, controls running into the help strip, help lines over two lines) and writes its lines and a problem count
+  to `settings_test.txt` in the capture folder; use `pdz_settings_test_dpi` 96 / 120 / 144 for 100 / 125 / 150 %.
 - **Its lines:** the window writes only the lines it owns: in place where they are, else under the release file's
   "Settings window" marker. It sets them for the current start too.
 - **Windowed:** back in the Screen mode choice (2026-11-04: `--fullscreen=false` ran 150 s through the front end into Datacore with no crash, log PDZ_Job8 008; the NVIDIA crash noted in docs/MAP_PACKS.md was an older build's). It writes `fullscreen = false`.
 
 **Test:** `pdz_settings_test_capture=<folder>` shows each tab, writes `tab<N>.bmp` and closes. All five tabs were
 captured in the test folder.
+
+## Split-screen frame cap (`pdz_splitscreen_cap`, 2026-11-08; untested in game)
+
+The Frame rate tab's Split screen choice. 3-player split screen drops frames at 60; a steady lower rate paces better.
+- **Where it acts:** `game_pace.cpp` `PdzFrontendPace` (the present step, game thread), the same lever as
+  `pdz_sp_120`'s 60 for co-op / multiplayer and `pdz_sp_60_levels`: the SDK's guest vblank divider
+  (`null_gpu::SetGuestVblankDivider`). With the guest paced at 120 Hz, 60 = divider 2, 40 = 3, 30 = 4; the divider is
+  `round(paced Hz / cap)`, never below the scene's own (so a 60 Hz display gives 60 / 30 / 30, a 144 Hz display's 72 Hz
+  pacing 72 / 36 / 36). `pdz::pace::EffectiveHz` reports the capped rate, so the Havok step (`pdz_physics_frame_step`)
+  and the prop fixes follow it as they do at 60 and 120.
+- **When:** in a level (state 21) with 2 or more local players: the participants (list `82E34224`, +4 next) of the
+  player kind (+944 = 2) whose local user (+1680) is 0-3, as distinct users; counted at the level start and every 60
+  frames (a list walk of at most 64 nodes, no guest calls, no allocation). Menus, loading, briefings and one-player
+  games are never capped; the cap lifts when the level ends or the count drops below 2.
+- **Auto (0, the default):** 2 players keep today's 60; 3 or 4 players run at 40 when the paced rate is 90 Hz or
+  more (120 / 3), else 60. 60 / 40 / 30 apply to any split screen.
+- **Log:** `pdz_splitscreen_cap: <n> local players, cap <x> Hz (setting <v>)` when it engages or changes,
+  `pdz_splitscreen_cap: <n> local players, cap off (setting <v>)` when it releases. The existing
+  `pdz_pace: pdz_sp_120: level (game mode N): X fps` line shows the rate too. Hot-reload: a test script's
+  `cvar <t> pdz_splitscreen_cap 30` changes it mid-level.
+- **Needs** pdz_sp_120's pacing (null backend, vsync on, pdz_null_refresh_hz unset); without it nothing is capped.
 
 ## Controls tab (2026-11-04, evening)
 

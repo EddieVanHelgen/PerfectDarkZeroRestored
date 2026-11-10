@@ -137,6 +137,22 @@ REXCVAR_DEFINE_STRING(pdz_sp_60_levels, "", "Render",
                       "per level. Example: rooftops,jungle")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(pdz_splitscreen_cap, 0, "Render",
+                     "Split-screen frame cap (the settings window's Frame rate tab, 2026-11-08): the frame rate while 2 "
+                     "or more local players share the screen in a co-op or multiplayer level; menus, loading and "
+                     "one-player games are not affected and the cap lifts when the level ends. 0 = Auto: 2 players "
+                     "keep the 60 that pdz_sp_120 gives co-op and multiplayer; 3 or 4 players run at 40 when the "
+                     "guest is paced at 120 Hz (an even division; on a 60 Hz display Auto keeps 60). 60 / 40 / 30 = "
+                     "that cap whatever the player count, as the rate the pacing can give: the paced vblank rate "
+                     "divided by a whole number (at 120 Hz exactly 60 / 40 / 30; at 60 Hz 40 rounds to 30; at a "
+                     "144 Hz display's 72 Hz 40 and 30 give 36). Local players are the participants of the player "
+                     "kind with a local user (0-3), counted at the level start and every 60 frames (a list walk, no "
+                     "guest calls). One 'pdz_splitscreen_cap:' line when the cap engages, changes or releases. The "
+                     "physics step and the prop fixes follow it (pdz::pace::EffectiveHz). Needs pdz_sp_120's pacing "
+                     "(null backend, vsync on): without it nothing is capped")
+    .range(0, 240)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(pdz_cutscene_audio_sync, true, "Render",
                     "Cutscene picture follows the sound: the cutscene's picture keeps Rare's 66 ms lead on its sound "
                     "even when the sound falls behind real time (the audio output played silence because the game's "
@@ -273,6 +289,19 @@ namespace
   // pdz_sp_60_levels (game thread, the present step): the level last seen and whether it is on the list.
   uint32_t g_level_key = ~0u; // state object low bits, mode and level id; ~0 = not in a level
   bool g_level_listed = false;
+  // pdz_splitscreen_cap (game thread, the present step): Rare's participant list (every player and bot of a co-op or
+  // multiplayer level; the offsets counter_op.cpp and cut_scenarios.cpp use): +4 next, +944 kind (2 player, 3 bot),
+  // +1680 the participant's local user (0-3 for a player on this machine). The local players are counted at the level
+  // start and every kLocalPlayersEveryFrames frames; the cap is decided from the count and the setting, with one line
+  // when it changes.
+  constexpr uint32_t kParticipantList = 0x82E34224;
+  constexpr uint32_t kParticipantNext = 4, kParticipantKind = 944, kParticipantUser = 1680;
+  constexpr uint32_t kParticipantKindPlayer = 2;
+  constexpr uint32_t kLocalPlayersEveryFrames = 60;
+  uint32_t g_local_players = 0;       // local players in the current level (0 outside a level)
+  uint32_t g_local_players_frame = 0; // frames since they were last counted
+  uint32_t g_split_cap_hz = 0;        // the split-screen cap in effect (the paced rate it gives), 0 = none
+  int32_t g_split_cap_setting = -1;   // the setting the last 'pdz_splitscreen_cap:' line was for
   std::atomic<uint32_t> g_cap_fps{0}; // the capped rate while it is on (EffectiveHz)
   uint32_t g_frames_in_flight = 2;
   // pdz_present_pacing present (Deck log: gamescope), latched by ChooseAtStartup.
@@ -684,6 +713,50 @@ namespace
              AnyItem(level->aliases, [&](const std::string &alias) { return alias == token; });
     });
   }
+
+  // pdz_splitscreen_cap: the local players in the level: the participants of the player kind whose local user is
+  // 0-3, as distinct users (a 4-bit mask: a user counts once). At most 64 nodes, three words each, no guest calls.
+  uint32_t CountLocalPlayers(const uint8_t *base)
+  {
+    uint32_t users = 0;
+    uint32_t p = GuestU32(base, kParticipantList);
+    for (uint32_t n = 0; p >= 0x10000u && p < 0xF0000000u && (p & 3u) == 0 && n < 64;
+         p = GuestU32(base, p + kParticipantNext), ++n)
+    {
+      if (GuestU32(base, p + kParticipantKind) != kParticipantKindPlayer)
+      {
+        continue;
+      }
+      const uint32_t user = GuestU32(base, p + kParticipantUser);
+      if (user < 4)
+      {
+        users |= 1u << user;
+      }
+    }
+    uint32_t count = 0;
+    for (; users; users &= users - 1)
+    {
+      ++count;
+    }
+    return count;
+  }
+
+  // pdz_splitscreen_cap: the cap in Hz for this many local players, 0 = none. A set value applies to any split
+  // screen; Auto (0) keeps 2 players at pdz_sp_120's 60 for co-op and multiplayer and takes 3 or 4 players to 40
+  // where the paced rate is 120 Hz-class (an even division: 120 / 3); on a 60 Hz-paced display Auto keeps 60 (30
+  // would halve it, unmeasured).
+  uint32_t SplitCapHz(int32_t setting, uint32_t players)
+  {
+    if (players < 2)
+    {
+      return 0;
+    }
+    if (setting > 0)
+    {
+      return uint32_t(setting);
+    }
+    return players >= 3 && g_hz >= 90 ? 40u : 0u;
+  }
 } // namespace
 
 // Mid-function hook (midasm_hooks_tu3.toml), before T 821418E4 (lwz r11,-16424(r29)) in the present step
@@ -759,7 +832,8 @@ bool PdzFrontendPace()
     // (the state object, mode and level id), with one line.
     const uint32_t key =
         level ? ((state_object & 0xFFFFu) << 16) | ((mode & 0xFFu) << 8) | base[state_object + kGameLevelId] : ~0u;
-    if (key != g_level_key)
+    const bool new_level = key != g_level_key;
+    if (new_level)
     {
       g_level_key = key;
       g_level_listed = false;
@@ -773,7 +847,42 @@ bool PdzFrontendPace()
                     id, raw, g_level_listed ? "locked 60 (pdz_sp_60_levels)" : "120 (pdz_sp_120)");
       }
     }
-    const uint32_t divider = level && (mode != 0 || g_level_listed) ? CutsceneDivider() : 1u;
+    // pdz_splitscreen_cap: the local players sharing the screen (counted at the level start and every 60 frames;
+    // 0 outside a level), the cap for them, and the divider that gives it: the paced rate over a whole number, never
+    // below the scene's own divider. One line when the cap engages, changes or releases.
+    const int32_t split_setting = REXCVAR_GET(pdz_splitscreen_cap);
+    if (!level)
+    {
+      g_local_players = 0;
+      g_local_players_frame = 0;
+    }
+    else if (new_level || ++g_local_players_frame >= kLocalPlayersEveryFrames)
+    {
+      g_local_players_frame = 0;
+      g_local_players = CountLocalPlayers(base);
+    }
+    const uint32_t split_cap = level ? SplitCapHz(split_setting, g_local_players) : 0u;
+    uint32_t divider = level && (mode != 0 || g_level_listed) ? CutsceneDivider() : 1u;
+    if (split_cap)
+    {
+      const long by = std::lround(double(g_hz) / double(split_cap));
+      divider = std::max(divider, uint32_t(std::max<long>(1, by)));
+    }
+    const uint32_t split_hz = split_cap ? g_hz / divider : 0u;
+    if (split_hz != g_split_cap_hz || (split_hz && split_setting != g_split_cap_setting))
+    {
+      g_split_cap_hz = split_hz;
+      g_split_cap_setting = split_setting;
+      if (split_hz)
+      {
+        REXLOG_INFO("pdz_splitscreen_cap: {} local players, cap {} Hz (setting {})", g_local_players, split_hz,
+                    split_setting);
+      }
+      else
+      {
+        REXLOG_INFO("pdz_splitscreen_cap: {} local players, cap off (setting {})", g_local_players, split_setting);
+      }
+    }
     // pdz_present_pacing vrr: single player levels at the cap under the display's refresh (the vsync worker's rate
     // while the divider is 1); the front end, co-op, multiplayer and pdz_sp_60_levels keep the paced rate's 60.
     const bool cap = g_vrr && level && mode == 0 && !g_level_listed;

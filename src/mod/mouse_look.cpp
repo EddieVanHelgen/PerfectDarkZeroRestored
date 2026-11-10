@@ -15,6 +15,11 @@
 //
 // Aim help: while the keyboard / mouse is the last device used (pdz_mouse_aim_assist_off, on) the rotational aim
 // assist is skipped here and auto-aim's bend is undone (aim_assist.cpp); a controller's input brings both back.
+//
+// Mounted turrets (pdz_mouse_direct_steer, on; 2026-11-08): the mouse turns the turret's own aim (yaw +928 / pitch
+// +924, read from its vtable's getters) right after Rare's look update for it, in degrees per count as on foot, before
+// the turret's own pitch clamp (AfterSteeredLook, from look_tuning.cpp). The other steered things keep the mouse as
+// the right stick (NoteSteeredLook / TakeSteerStick).
 #include "mouse_look.h"
 #include "../game_cvars.h"
 
@@ -50,9 +55,10 @@ REXCVAR_DEFINE_BOOL(pdz_mouse_look, true, "Mouse",
                     "Mouse aim: on foot the mouse turns the view directly (1:1, no dead zone, response curve, "
                     "acceleration or turn cap) instead of emulating the right stick; slower when zoomed, in proportion "
                     "to the field of view; the game's pitch limit applies. Where the gameplay look doesn't run "
-                    "(menus, cutscenes) the emulated stick (mnk_sensitivity) is in charge. While something else is "
-                    "steered (the CamSpy, a turret, the guided rocket, the hovercraft, the jetpack) the mouse becomes "
-                    "the right stick it reads (mnk_sensitivity's scale). Needs mnk_mode and mnk_mouse")
+                    "(menus, cutscenes) the emulated stick (mnk_sensitivity) is in charge. A mounted turret takes the "
+                    "mouse into its aim the same way (pdz_mouse_direct_steer). While something else is steered (the "
+                    "CamSpy, the guided rocket, the hovercraft, the jetpack) the mouse becomes the right stick it reads "
+                    "(mnk_sensitivity's scale). Needs mnk_mode and mnk_mouse")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(pdz_mouse_sensitivity, 2.0, "Mouse",
                       "Mouse aim sensitivity: the view turns 0.022 deg x this per mouse count (the Source games' scale; "
@@ -91,12 +97,25 @@ REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_motion_y, 0.0, "Mouse",
 REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_steer, 0.0, "Mouse",
                       "TESTING TOOL: while something other than the player's own view is steered (a turret, the "
                       "CamSpy, the guided rocket, a vehicle), this many mouse counts per second to the right are added "
-                      "where the steering takes the mouse's motion (MouseLook::TakeSteerStick), after Windows and the "
-                      "window focus: for unattended runs, where pdz_mouse_test_motion can't reach a window that "
-                      "isn't in front. 0 = off")
+                      "where the steering takes the mouse's motion (MouseLook::TakeSteerStick, or ConsumeSteer for a "
+                      "turret with pdz_mouse_direct_steer), after Windows and the window focus: for unattended runs, "
+                      "where pdz_mouse_test_motion can't reach a window that isn't in front. 0 = off")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_steer_y, 0.0, "Mouse",
                       "TESTING TOOL: as pdz_mouse_test_steer, counts per second downward")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_mouse_direct_steer, true, "Mouse",
+                    "Mouse aim on mounted turrets: the mouse turns the turret's own aim directly, as on foot "
+                    "(pdz_mouse_sensitivity's degrees per count, whatever the frame rate, no stick turn cap); the "
+                    "game's turret limits still apply. Off = the mouse is the right stick the turret reads "
+                    "(mnk_sensitivity's scale, capped at the stick's top turn rate), as in 0.9.3. The controller is "
+                    "the same either way. The CamSpy, the guided rocket, the hovercraft and the jetpack keep the "
+                    "mouse as the right stick. Needs pdz_mouse_look")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(pdz_mouse_direct_steer_log, false, "Mouse",
+                    "Diagnostic: once a second while guest user 0 is on a mounted turret, a 'pdz_mouse: turret aim' "
+                    "line (its yaw / pitch, this second's mouse counts and turn and the change of its aim, turret "
+                    "updates per second), with pdz_mouse_direct_steer on or off")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(pdz_mouse_test_face_yaw, 999.0, "Mouse",
                       "TESTING TOOL: sets the on-foot view's yaw to this (degrees) once each time the value changes "
@@ -151,6 +170,8 @@ namespace pdz::mouse
     std::atomic<int64_t> g_syn_polls{0}, g_syn_nonzero{0}, g_syn_counts_x{0}, g_syn_counts_y{0};
     std::atomic<double> g_syn_sum{0.0}, g_syn_last_x{0.0}, g_syn_last_y{0.0};
     std::atomic<int> g_last_device{-1}; // 1 = keyboard / mouse, 0 = a controller, -1 = not decided yet
+    // TakeRawMouseMotion: every mouse motion event the window sees, signed counts, whoever owns the pointer.
+    std::atomic<int64_t> g_raw_dx{0}, g_raw_dy{0};
 
     // NoteSteeredLook: the last time something other than the player's view was steered, and what.
     constexpr std::chrono::milliseconds kSteerHold{250};
@@ -158,6 +179,8 @@ namespace pdz::mouse
     std::atomic<uint32_t> g_steered_caller{0};
     std::atomic<uint32_t> g_steered_object{0};
     std::atomic<bool> g_steering{false};
+    // The steered thing's aim takes the mouse directly (pdz_mouse_direct_steer: a turret), not as the right stick.
+    std::atomic<bool> g_steered_direct{false};
     // The player whose own view the mouse aims (ApplyMouseLook: guest user 0, our view class): only his steering
     // counts (a bot gunner on a turret runs the same look update).
     std::atomic<uint32_t> g_human_player{0};
@@ -174,6 +197,72 @@ namespace pdz::mouse
     {
       return NowNs() - g_steered_ns.load(std::memory_order_relaxed) <
              std::chrono::duration_cast<std::chrono::nanoseconds>(kSteerHold).count();
+    }
+
+    // Steering, with the mouse into the steered aim directly (no right stick from the mouse meanwhile).
+    bool DirectSteering() { return SteeringActive() && g_steered_direct.load(std::memory_order_relaxed); }
+
+    // The mounted turret's caller of the look update (sub_8258CEA0 -> sub_825B3AC0).
+    constexpr uint32_t kTurretCaller = 0x8258DF48;
+
+    // A steered view's yaw / pitch fields, from its own vtable: +24 / +28 must be 'lfs f1,D(r3); blr' and +32 / +36
+    // 'stfs f1,D(r3); blr' with the same D for each angle (the turret, vtable 820C5BE0: 8258BA10 / 8258BA18 read
+    // +928 / +924, 8258BA20 / 8258BA28 write them). Read from the guest code once per vtable (the last one cached).
+    struct AngleFields
+    {
+      uint32_t yaw = 0, pitch = 0;
+    };
+    bool FindAngleFields(const uint8_t *base, uint32_t object, AngleFields &out)
+    {
+      const auto in_image = [](uint32_t a) {
+        return a >= GameConstants::kImageBase && a < GameConstants::kImageBase + GameConstants::kImageSize - 8u;
+      };
+      const auto be32 = [base](uint32_t a) {
+        const uint8_t *p = base + a;
+        return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+      };
+      if (object < 0x10000u || object >= 0xFFFF0000u)
+      {
+        return false;
+      }
+      const uint32_t vtbl = be32(object);
+      static std::atomic<uint64_t> cache{0}; // vtable << 32 | yaw << 16 | pitch
+      const uint64_t cached = cache.load(std::memory_order_relaxed);
+      if (cached != 0 && uint32_t(cached >> 32) == vtbl)
+      {
+        out.yaw = uint32_t(cached >> 16) & 0xFFFFu;
+        out.pitch = uint32_t(cached) & 0xFFFFu;
+        return true;
+      }
+      if (!in_image(vtbl))
+      {
+        return false;
+      }
+      // opcode 48 = lfs, 52 = stfs; frt 1, ra 3; the next word blr (4E800020).
+      const auto field = [&](uint32_t slot, uint32_t opcode) -> int32_t {
+        const uint32_t fn = be32(vtbl + slot);
+        if (!in_image(fn) || be32(fn + 4) != 0x4E800020u)
+        {
+          return -1;
+        }
+        const uint32_t insn = be32(fn);
+        if ((insn >> 26) != opcode || ((insn >> 21) & 31) != 1 || ((insn >> 16) & 31) != 3)
+        {
+          return -1;
+        }
+        const int32_t d = int16_t(insn & 0xFFFF);
+        return d >= 0 && (d & 3) == 0 ? d : -1;
+      };
+      const int32_t get_yaw = field(24, 48), get_pitch = field(28, 48), set_yaw = field(32, 52),
+                    set_pitch = field(36, 52);
+      if (get_yaw < 0 || get_yaw != set_yaw || get_pitch < 0 || get_pitch != set_pitch || get_yaw == get_pitch)
+      {
+        return false;
+      }
+      out.yaw = uint32_t(get_yaw);
+      out.pitch = uint32_t(get_pitch);
+      cache.store((uint64_t(vtbl) << 32) | (uint64_t(out.yaw) << 16) | out.pitch, std::memory_order_relaxed);
+      return true;
     }
 
     // The callers of sub_825B3AC0 (return addresses), by what they steer.
@@ -236,7 +325,7 @@ namespace pdz::mouse
     }
   } // namespace
 
-  void NoteSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller)
+  Steer NoteSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller)
   {
     // Guest user 0's player only (the SDK merges keyboard and mouse into user 0). He is the owner (the CamSpy, a
     // turret: sub_8258CEA0 passes the turret's user at +1476, the guided rocket) or the steered view itself (the
@@ -314,21 +403,64 @@ namespace pdz::mouse
                     caller, SteeredName(caller), owner, owner_user, object, view_user,
                     g_human_player.load(std::memory_order_relaxed), human_known ? "yes" : "no");
       }
-      return;
+      return Steer::kNotTaken;
+    }
+    // pdz_mouse_direct_steer: a mounted turret whose view has plain yaw / pitch fields takes the mouse into its aim
+    // (AfterSteeredLook); everything else (and a view of another shape) the right stick, as before.
+    AngleFields fields;
+    const bool direct = caller == kTurretCaller && REXCVAR_GET(pdz_mouse_direct_steer) &&
+                        REXCVAR_GET(pdz_mouse_look) && FindAngleFields(base, object, fields);
+    if (caller == kTurretCaller && REXCVAR_GET(pdz_mouse_direct_steer) && !direct && LogOnce(0xFFFF0003u))
+    {
+      REXLOG_INFO("pdz_mouse: turret {:08X} (vtable {:08X}): {}: the mouse stays the right stick", object,
+                  Be32(base, object),
+                  REXCVAR_GET(pdz_mouse_look) ? "its yaw / pitch getters and setters aren't plain fields"
+                                              : "pdz_mouse_look is off");
     }
     g_steered_ns.store(NowNs(), std::memory_order_relaxed);
     g_steered_caller.store(caller, std::memory_order_relaxed);
     g_steered_object.store(object, std::memory_order_relaxed);
+    const bool was_direct = g_steered_direct.exchange(direct, std::memory_order_relaxed);
     MouseLook &look = MouseLook::Get();
-    look.NoteGameplayLook();    // play, not a menu: the mouse buttons and the wheel keep their binds
-    look.ConsumeForSteering(); // the pointer stays ours; its motion becomes the right stick (TakeSteerStick)
-    if (!g_steering.exchange(true, std::memory_order_relaxed))
+    look.NoteGameplayLook();         // play, not a menu: the mouse buttons and the wheel keep their binds
+    look.ConsumeForSteering(direct); // the pointer stays ours; its motion becomes the right stick (TakeSteerStick)
+    if (!g_steering.exchange(true, std::memory_order_relaxed) || was_direct != direct)
     {
-      REXLOG_INFO("pdz_mouse: the {} takes the mouse (object {:08X}): the mouse drives the right stick "
-                  "(mnk_sensitivity {:.2f}, mouse up = {})",
-                  SteeredName(caller), object, SteerSensitivity(),
-                  REXCVAR_GET(pdz_mouse_invert) ? "look down (pdz_mouse_invert)" : "look up");
+      if (direct)
+      {
+        // Rare's clamp after the look update (sub_8258CEA0 at 8258DF78): pitch x 0.01745 (820EAE48), wrapped
+        // (sub_82703490), then fsel against the floats at 82D35BE8 (top) / 82D35BE4 (bottom), replaced by the
+        // doubles at 820EC710 / 820EC708 past them. The yaw is only wrapped.
+        const auto f32 = [base](uint32_t a) {
+          const uint32_t b = Be32(base, a);
+          float f;
+          std::memcpy(&f, &b, 4);
+          return double(f);
+        };
+        const auto f64 = [base](uint32_t a) {
+          const uint64_t b = (uint64_t(Be32(base, a)) << 32) | Be32(base, a + 4);
+          double d;
+          std::memcpy(&d, &b, 8);
+          return d;
+        };
+        constexpr double kDeg = 180.0 / 3.14159265358979323846;
+        REXLOG_INFO("pdz_mouse: the turret takes the mouse into its aim (object {:08X}, vtable {:08X}, yaw +{} pitch "
+                    "+{}): {:.4f} deg per count (pdz_mouse_sensitivity {:.2f}), mouse up = {} | the turret's own "
+                    "limits: pitch {:.1f} .. {:.1f} deg (past them {:.1f} / {:.1f}), yaw wraps (no limit)",
+                    object, Be32(base, object), fields.yaw, fields.pitch,
+                    REXCVAR_GET(pdz_mouse_sensitivity) * kDegreesPerCount, REXCVAR_GET(pdz_mouse_sensitivity),
+                    REXCVAR_GET(pdz_mouse_invert) ? "look down (pdz_mouse_invert)" : "look up",
+                    f32(0x82D35BE4) * kDeg, f32(0x82D35BE8) * kDeg, f64(0x820EC708) * kDeg, f64(0x820EC710) * kDeg);
+      }
+      else
+      {
+        REXLOG_INFO("pdz_mouse: the {} takes the mouse (object {:08X}): the mouse drives the right stick "
+                    "(mnk_sensitivity {:.2f}, mouse up = {})",
+                    SteeredName(caller), object, SteerSensitivity(),
+                    REXCVAR_GET(pdz_mouse_invert) ? "look down (pdz_mouse_invert)" : "look up");
+      }
     }
+    return direct ? Steer::kDirect : Steer::kStick;
   }
 
 
@@ -505,7 +637,9 @@ namespace pdz::mouse
 
   void SteerStickForPad(double &x, double &y)
   {
-    const MouseLook::SteerStick st = MouseLook::Get().TakeSteerStick(SteeringActive());
+    // pdz_mouse_direct_steer: the turret's aim takes the mouse itself; no stick from it (the controller's own
+    // stick passes the pad filter untouched either way).
+    const MouseLook::SteerStick st = MouseLook::Get().TakeSteerStick(SteeringActive() && !DirectSteering());
     x = st.x;
     y = st.y;
     if (SteerLogOn())
@@ -642,7 +776,8 @@ namespace pdz::mouse
 
   bool SteeringInvertY()
   {
-    return REXCVAR_GET(pdz_mouse_invert) && SteeringActive() && MouseIsLastDevice();
+    // Not while the mouse turns a turret's aim directly: the stick then is the controller's alone.
+    return REXCVAR_GET(pdz_mouse_invert) && SteeringActive() && !DirectSteering() && MouseIsLastDevice();
   }
 
   bool MouseIsLastDevice()
@@ -713,7 +848,7 @@ namespace pdz::mouse
     rex::input::mnk::SetMenuMode(false);
   }
 
-  void MouseLook::ConsumeForSteering()
+  void MouseLook::ConsumeForSteering(bool direct)
   {
     UiTask task;
     {
@@ -726,7 +861,7 @@ namespace pdz::mouse
         last_consume_ = now;
         task = BeginReleaseLocked();
       }
-      else if (AdvanceClaimLocked(now, task))
+      else if (AdvanceClaimLocked(now, task) && !direct)
       {
         steer_dx_ += pending_dx_;
         steer_dy_ += pending_dy_;
@@ -734,6 +869,39 @@ namespace pdz::mouse
       }
     }
     Post(std::move(task));
+  }
+
+  MouseLook::SteerTurn MouseLook::ConsumeSteer(double extra_scale)
+  {
+    UiTask task;
+    SteerTurn out;
+    {
+      std::lock_guard lock(mu_);
+      const auto now = Clock::now();
+      // pdz_mouse_test_steer / _y (testing tools): counts per second of wall clock, as a mouse sends them.
+      const double dt = last_steer_turn_ == Clock::time_point{}
+                            ? 0.0
+                            : std::clamp(std::chrono::duration<double>(now - last_steer_turn_).count(), 0.0, 0.1);
+      last_steer_turn_ = now;
+      double dx = REXCVAR_GET(pdz_mouse_test_steer) * dt, dy = REXCVAR_GET(pdz_mouse_test_steer_y) * dt;
+      const bool want = REXCVAR_GET(pdz_mouse_look) && window_ && has_focus_ && !OverlayWantsMouse();
+      if (!want)
+      {
+        last_consume_ = now;
+        task = BeginReleaseLocked();
+      }
+      else if (AdvanceClaimLocked(now, task))
+      {
+        dx += pending_dx_;
+        dy += pending_dy_;
+        pending_dx_ = pending_dy_ = 0.0;
+      }
+      out.counts_x = dx;
+      out.counts_y = dy;
+      out.turn = TurnFromCounts(dx, dy, extra_scale);
+    }
+    Post(std::move(task));
+    return out;
   }
 
   MouseLook::SteerStick MouseLook::TakeSteerStick(bool steering)
@@ -796,8 +964,16 @@ namespace pdz::mouse
     return "?";
   }
 
+  void TakeRawMouseMotion(double &dx, double &dy)
+  {
+    dx = double(g_raw_dx.exchange(0, std::memory_order_relaxed));
+    dy = double(g_raw_dy.exchange(0, std::memory_order_relaxed));
+  }
+
   void MouseLook::OnMouseMove(rex::ui::MouseEvent &e)
   {
+    g_raw_dx.fetch_add(int64_t(e.dx()), std::memory_order_relaxed);
+    g_raw_dy.fetch_add(int64_t(e.dy()), std::memory_order_relaxed);
     if (SteerLogOn())
     {
       const int64_t px = std::llabs(int64_t(e.dx())), py = std::llabs(int64_t(e.dy()));
@@ -1031,6 +1207,11 @@ namespace pdz::mouse
     const double dx = pending_dx_;
     const double dy = pending_dy_;
     pending_dx_ = pending_dy_ = 0.0;
+    return TurnFromCounts(dx, dy, extra_scale);
+  }
+
+  Turn MouseLook::TurnFromCounts(double dx, double dy, double extra_scale)
+  {
     const double degrees_per_count = REXCVAR_GET(pdz_mouse_sensitivity) * kDegreesPerCount * extra_scale;
     // Pointer y grows downward: + = look down.
     const double y_sign = REXCVAR_GET(pdz_mouse_invert) ? -1.0 : 1.0;
@@ -1148,6 +1329,13 @@ namespace
   // and are left to the emulated stick).
   bool OurView(const uint8_t *base, uint32_t player, uint32_t view)
   {
+    // On foot the look update passes the player as both (look_tuning.cpp on_foot). The hovercraft and the jetpack pass
+    // the vehicle as the owner with his view: the vehicle's "+6560" below need not be inside it (the turret crash's
+    // read), so a different owner is never read here.
+    if (player != view)
+    {
+      return false;
+    }
     if (!HasVirtual(base, view, kVtblGetYaw, kGetYawFunc) || !HasVirtual(base, view, kVtblGetPitch, kGetPitchFunc))
     {
       return false;
@@ -1156,10 +1344,11 @@ namespace
     return input >= 0x10000u && static_cast<int32_t>(LoadBe32(base, input + kInputUserIndex)) == 0;
   }
 
-  void Turn(uint8_t *base, uint32_t view, double yaw_deg, double pitch_deg, bool log_test)
+  void Turn(uint8_t *base, uint32_t view, double yaw_deg, double pitch_deg, bool log_test,
+            uint32_t yaw_field = kViewYaw, uint32_t pitch_field = kViewPitch)
   {
-    const float yaw_in = LoadBeFloat(base, view + kViewYaw);
-    const float pitch_in = LoadBeFloat(base, view + kViewPitch);
+    const float yaw_in = LoadBeFloat(base, view + yaw_field);
+    const float pitch_in = LoadBeFloat(base, view + pitch_field);
     const float yaw_out = WrapDegrees(yaw_in - static_cast<float>(yaw_deg));
     // Clamped only in the direction of the motion: recoil may have pushed the pitch past the limit already, the mouse
     // must not snap it back.
@@ -1174,8 +1363,8 @@ namespace
     {
       pitch_out = std::min(pitch_in, -limit);
     }
-    StoreBeFloat(base, view + kViewYaw, yaw_out);
-    StoreBeFloat(base, view + kViewPitch, pitch_out);
+    StoreBeFloat(base, view + yaw_field, yaw_out);
+    StoreBeFloat(base, view + pitch_field, pitch_out);
     if (log_test)
     {
       REXLOG_INFO("pdz_mouse: test: view {:08X} yaw {:.2f} -> {:.2f}, pitch {:.2f} -> {:.2f} (limit {:.1f})", view,
@@ -1204,7 +1393,7 @@ namespace
     // isn't turned by it meanwhile.
     if (pdz::mouse::SteeringActive())
     {
-      look.ConsumeForSteering();
+      look.ConsumeForSteering(pdz::mouse::DirectSteering());
       return;
     }
     if (pdz::mouse::g_steering.exchange(false, std::memory_order_relaxed))
@@ -1254,6 +1443,84 @@ namespace
     }
   }
 } // namespace
+
+namespace pdz::mouse
+{
+  // A mounted turret (sub_8258CEA0 [8257D618], vtable 820C5BE0): its aim is yaw +928 / pitch +924, kept in radians.
+  // Before its look update (8258DEC0..8258DF20) it rewrites both in degrees through its vtable +24 / +32 and +28 /
+  // +36; the look update (sub_825B3AC0, its user as the owner, the turret as the view, the look state at +936) turns
+  // them from the stick and clamps the pitch to the look tuning's limit (float +64, as on foot); after it
+  // (8258DF54..8258DFEC) the turret takes them back to radians, wraps both and clamps the pitch to its own limits
+  // (82D35BE4 / 82D35BE8). The mouse turn goes in here, between the two: degrees per count as on foot, the look
+  // update's pitch limit as on foot (Turn), and the turret's own clamp right after, by Rare's code.
+  void AfterSteeredLook(uint8_t *base, uint32_t owner, uint32_t object, uint32_t caller, Steer steer)
+  {
+    const bool log = REXCVAR_GET(pdz_mouse_direct_steer_log);
+    if (steer == Steer::kNotTaken || caller != kTurretCaller || (steer != Steer::kDirect && !log))
+    {
+      return;
+    }
+    AngleFields f;
+    if (!FindAngleFields(base, object, f))
+    {
+      return;
+    }
+    // pdz_mouse_direct_steer_log: one guest thread runs the turret updates.
+    struct Track
+    {
+      uint32_t object = 0;
+      int64_t last_ns = 0, second_ns = 0;
+      float yaw = 0.0f, pitch = 0.0f; // the aim at the previous update, after the look update, before the mouse
+      int frames = 0;
+      double counts_x = 0.0, counts_y = 0.0, turn_yaw = 0.0, turn_pitch = 0.0, moved_yaw = 0.0, moved_pitch = 0.0;
+      double total_x = 0.0, total_y = 0.0;
+    };
+    static Track t;
+    const int64_t now = NowNs();
+    const float yaw_now = ::LoadBeFloat(base, object + f.yaw), pitch_now = ::LoadBeFloat(base, object + f.pitch);
+    if (t.object != object || now - t.last_ns > 500000000LL)
+    {
+      t = Track{};
+      t.object = object;
+      t.second_ns = now;
+      t.yaw = yaw_now;
+      t.pitch = pitch_now;
+    }
+    t.last_ns = now;
+    ++t.frames;
+    t.moved_yaw += ::WrapDegrees(yaw_now - t.yaw);
+    t.moved_pitch += double(pitch_now) - double(t.pitch);
+    t.yaw = yaw_now;
+    t.pitch = pitch_now;
+    if (steer == Steer::kDirect)
+    {
+      const MouseLook::SteerTurn st = MouseLook::Get().ConsumeSteer(::ZoomScale(base, owner));
+      if (st.turn.yaw != 0.0 || st.turn.pitch != 0.0)
+      {
+        ::Turn(base, object, st.turn.yaw, st.turn.pitch, false, f.yaw, f.pitch);
+      }
+      t.counts_x += st.counts_x;
+      t.counts_y += st.counts_y;
+      t.total_x += st.counts_x;
+      t.total_y += st.counts_y;
+      t.turn_yaw += ::WrapDegrees(::LoadBeFloat(base, object + f.yaw) - yaw_now);
+      t.turn_pitch += double(::LoadBeFloat(base, object + f.pitch)) - double(pitch_now);
+    }
+    if (log && now - t.second_ns >= 1000000000LL)
+    {
+      const double secs = double(now - t.second_ns) / 1e9;
+      REXLOG_INFO("pdz_mouse: turret aim: {} | {} updates in {:.2f} s ({:.0f}/s) | yaw {:+.2f} pitch {:+.2f} deg | "
+                  "this second: mouse counts x {:+.0f} y {:+.0f}, mouse turn yaw {:+.3f} pitch {:+.3f}, aim moved yaw "
+                  "{:+.3f} pitch {:+.3f} | since mount: counts x {:+.0f} y {:+.0f}",
+                  steer == Steer::kDirect ? "direct" : "mouse as the right stick (pdz_mouse_direct_steer off)",
+                  t.frames, secs, t.frames / secs, yaw_now, pitch_now, t.counts_x, t.counts_y, t.turn_yaw,
+                  t.turn_pitch, t.moved_yaw, t.moved_pitch, t.total_x, t.total_y);
+      t.second_ns = now;
+      t.frames = 0;
+      t.counts_x = t.counts_y = t.turn_yaw = t.turn_pitch = t.moved_yaw = t.moved_pitch = 0.0;
+    }
+  }
+} // namespace pdz::mouse
 
 // sub_825AF590 [8259FD70](player, view, look state, f1, f2 = dt): the rotational aim assist, the last step of the
 // look update.

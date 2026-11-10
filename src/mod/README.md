@@ -114,9 +114,10 @@ the tweaks off and on.
 | `pdz_aim_friction_toward` | `0.9` | Share of the friction while turning toward the target (from the aim direction's change since the last update; `1` = always) |
 | `pdz_autoaim_ignore_difficulty` | `false` | Same auto-aim on every difficulty (`false` = original) |
 | `pdz_aim_still_lock` | `true` | Bend shots while holding still or tracking slowly: lock radius `+0x14 + +0x1C * t` instead of `(+0x14 + +0x1C * t) * t` (after `sub_824E36D8` returns to `824E23F8`, both fields divided by t for the lock test; t = 1e-6 when 0). `false` = original |
-| `pdz_aim_assist_zoomed` | `true` (on by request) | Keep the game's rotational assist (`sub_8259FD70`) on while zoomed: its zoom check (player vtable +536, `sub_8259C878`, called at `8259FEA0`) answers "not zoomed" for that call only. `false` = original (assist off while zoomed) |
+| `pdz_aim_assist_zoomed` | `true` (on by request) | Keep the game's rotational assist (`sub_8259FD70`) on while zoomed: its zoom check (player vtable +536, `sub_8259C878`, called at `8259FEA0`) answers "not zoomed" for that call only. `false` = original (assist off while zoomed). With `pdz_autoaim_zoom_falloff` on, only up to zoom 0.5 (2x) |
+| `pdz_autoaim_zoom_falloff` | `true` | Zoomed, a shot bend (auto-aim +0x38 minus +0x30, x (1 - zoom) = unzoomed screen units) is kept only if it is at most `pdz_autoaim_zoom_radius` (0.05) x (1 - zoom)^2; otherwise +0x30 is copied into +0x38 and the shot goes where the crosshair points. Not zoomed: unchanged. Allowed bends still get `pdz_fix_autoaim_zoom_bend` |
 | `pdz_aim_respect_headshots` | `true` | While the reticle is over the target's screen box (auto-aim +0x20 <= 1), a bent shot keeps the player's aim height (+0x3C = +0x34) and is only bent sideways: the game bends to a fixed point on the body (`sub_82535E00`), so a head aim would hit the body. On by request for testing; `false` = original |
-| `pdz_autoaim_log` | `false` | `pdz_aim:` log lines |
+| `pdz_autoaim_log` | `false` | `pdz_autoaim: shot` (one per hitscan shot by a local player) and rate-limited `pdz_autoaim: decision` lines: zoom, target, bend, allowed, off-axis angle, still lock widening, result |
 
 ## How the game's auto-aim works
 
